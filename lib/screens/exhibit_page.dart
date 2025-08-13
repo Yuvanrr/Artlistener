@@ -209,7 +209,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
                             icon: Icon(
                               _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
                               size: 40,
-                              color: Colors.blue,
+                              color: Colors.black,
                             ),
                             onPressed: _playPauseAudio,
                           ),
@@ -250,7 +250,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
               child: ElevatedButton(
                 onPressed: _getNewExhibitDescription,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue,
+                  backgroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 16.0),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8.0),
