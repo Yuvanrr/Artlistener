@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
 import '../models/exhibit_model.dart';
 
 class UpdateExhibitPage extends StatefulWidget {
@@ -17,13 +18,66 @@ class _UpdateExhibitPageState extends State<UpdateExhibitPage> {
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _nameController;
   late TextEditingController _descriptionController;
+  List<wifi_scan.WiFiAccessPoint> _wifiNetworks = [];
   bool _isLoading = false;
+  bool _isScanning = false;
+  String? _selectedWifiSsid;
 
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.exhibit.name);
     _descriptionController = TextEditingController(text: widget.exhibit.description);
+    _selectedWifiSsid = widget.exhibit.wifiSsid;
+    _scanWifiNetworks();
+  }
+
+  Future<void> _scanWifiNetworks() async {
+    if (_isScanning) return;
+    
+    setState(() {
+      _isScanning = true;
+    });
+
+    // Request location permission
+    final can = await wifi_scan.WiFiScan.instance.canStartScan();
+    if (can != wifi_scan.CanStartScan.yes) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Location permission is required to scan for WiFi networks'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() {
+          _isScanning = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      final result = await wifi_scan.WiFiScan.instance.getScannedResults();
+      
+      if (mounted) {
+        setState(() {
+          _wifiNetworks = result.take(5).toList(); // Take top 5 networks
+          _isScanning = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to scan for WiFi networks'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() {
+          _isScanning = false;
+        });
+      }
+    }
   }
 
   @override
@@ -66,6 +120,7 @@ class _UpdateExhibitPageState extends State<UpdateExhibitPage> {
         widget.exhibit.copyWith(
           name: _nameController.text.trim(),
           description: _descriptionController.text.trim(),
+          wifiSsid: _selectedWifiSsid,
         ),
       );
     }
@@ -110,8 +165,10 @@ class _UpdateExhibitPageState extends State<UpdateExhibitPage> {
                 _buildSectionHeader('Update Details'),
                 const SizedBox(height: 16),
                 _buildNameField(),
-                const SizedBox(height: 16),
+                const SizedBox(height: 20),
                 _buildDescriptionField(),
+                const SizedBox(height: 28),
+                _buildWifiList(),
                 const SizedBox(height: 32),
                 _buildUpdateButton(),
               ],
@@ -227,6 +284,113 @@ class _UpdateExhibitPageState extends State<UpdateExhibitPage> {
       },
     );
   }
+
+  Widget _buildWifiList() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // WiFi Networks Section
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Available WiFi Networks',
+              style: TextStyle(
+                color: Colors.grey[800],
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            IconButton(
+              icon: _isScanning
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh, color: Colors.black54),
+              onPressed: _isScanning ? null : _scanWifiNetworks,
+              tooltip: 'Refresh WiFi List',
+            ),
+          ],
+        ),
+        
+        const SizedBox(height: 12),
+        
+        // WiFi Networks List
+        if (_isScanning && _wifiNetworks.isEmpty)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 24.0),
+              child: CircularProgressIndicator(),
+            ),
+          )
+        else if (_wifiNetworks.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 32),
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey[200]!),
+            ),
+            child: Column(
+              children: [
+                Icon(Icons.wifi_off, size: 48, color: Colors.grey[400]),
+                const SizedBox(height: 12),
+                Text(
+                  'No WiFi networks found',
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _wifiNetworks.length,
+            separatorBuilder: (context, index) => Divider(height: 1, color: Colors.grey[200]),
+            itemBuilder: (context, index) {
+              final network = _wifiNetworks[index];
+              return ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.wifi, color: Colors.blue),
+                ),
+                title: Text(
+                  network.ssid.isNotEmpty ? network.ssid : 'Hidden Network',
+                  style: const TextStyle(fontWeight: FontWeight.w500),
+                ),
+                subtitle: Text(
+                  'Signal: ${network.level} dBm',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                ),
+                trailing: Radio<String>(
+                  value: network.ssid,
+                  groupValue: _selectedWifiSsid,
+                  activeColor: Colors.black,
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedWifiSsid = value;
+                    });
+                  },
+                ),
+              );
+            },
+          ),
+      ],
+    );
+  }
+
+
 
   Widget _buildUpdateButton() {
     return SizedBox(
