@@ -11,6 +11,11 @@ dependencies:
     sdk: flutter
   audioplayers: ^5.2.1
   wifi_scan: ^0.4.1+2
+  http: ^1.1.0
+  firebase_core: ^2.24.2
+  firebase_auth: ^4.15.1
+  cloud_firestore: ^4.15.1
+  provider: ^6.1.1
 
 dev_dependencies:
   flutter_test:

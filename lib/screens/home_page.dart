@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'exhibit_page.dart';
 import 'admin_login_page.dart';
 
@@ -111,6 +112,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
+
           ],
         ),
       ),

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
+import 'package:provider/provider.dart';
+import '../providers/firebase_provider.dart';
 
 class SetExhibitPage extends StatefulWidget {
-  const SetExhibitPage({Key? key}) : super(key: key);
+  const SetExhibitPage({super.key});
 
   @override
   _SetExhibitPageState createState() => _SetExhibitPageState();
@@ -78,37 +80,96 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
   }
 
   Future<void> _onSetExhibit() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) {
+      print('Form validation failed');
+      return;
+    }
 
     setState(() {
       _isSubmitting = true;
     });
 
-    // Simulate API call delay
-    await Future.delayed(const Duration(seconds: 1));
-
-    if (mounted) {
-      setState(() {
-        _isSubmitting = false;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Exhibit set successfully!'),
-          backgroundColor: Colors.green[700],
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      );
+    try {
+      final firebaseProvider = Provider.of<FirebaseProvider>(context, listen: false);
       
-      // Clear form after successful submission
-      _formKey.currentState!.reset();
-      setState(() {
-        _wifiNetworks.clear();
-      });
-      _scanWifiNetworks();
+      // Prepare WiFi fingerprint data
+      print('Found ${_wifiNetworks.length} WiFi networks');
+      final wifiFingerprints = _wifiNetworks.map((ap) => {
+        'ssid': ap.ssid,
+        'bssid': ap.bssid,
+        'level': ap.level,
+        'frequency': ap.frequency,
+        'capabilities': ap.capabilities,
+      }).toList();
+
+      // Prepare exhibit data
+      final exhibitData = {
+        'name': _exhibitNameController.text.trim(),
+        'description': _exhibitDescController.text.trim(),
+        'wifiFingerprints': wifiFingerprints,
+        'wifiSsid': _wifiNetworks.isNotEmpty ? _wifiNetworks[0].ssid : '',
+        'createdAt': DateTime.now().toIso8601String(),
+        'updatedAt': DateTime.now().toIso8601String(),
+      };
+
+      print('Prepared exhibit data:');
+      print('Name: ${exhibitData['name']}');
+      print('Description: ${exhibitData['description']}');
+      print('WiFi SSID: ${exhibitData['wifiSsid']}');
+      print('WiFi Fingerprints count: ${wifiFingerprints.length}');
+      
+      // Save to Firebase
+      print('Sending data to Firebase...');
+      final success = await firebaseProvider.addExhibit(exhibitData);
+      print('Firebase response - Success: $success');
+
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Exhibit saved successfully!'),
+              backgroundColor: Colors.green[700],
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          );
+          
+          // Clear form after successful submission
+          _formKey.currentState!.reset();
+          setState(() {
+            _wifiNetworks.clear();
+          });
+          _scanWifiNetworks();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to save exhibit: ${firebaseProvider.error}'),
+              backgroundColor: Colors.red[700],
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red[700],
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 

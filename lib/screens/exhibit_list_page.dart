@@ -1,46 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/exhibit_model.dart';
+import '../providers/firebase_provider.dart';
 import 'update_exhibit_page.dart';
 
 class ExhibitListPage extends StatefulWidget {
-  const ExhibitListPage({Key? key}) : super(key: key);
+  const ExhibitListPage({super.key});
 
   @override
   _ExhibitListPageState createState() => _ExhibitListPageState();
 }
 
 class _ExhibitListPageState extends State<ExhibitListPage> {
-  bool _isLoading = true;
-  final List<Exhibit> _exhibits = [];
-
   @override
   void initState() {
     super.initState();
-    _loadExhibits();
-  }
-
-  Future<void> _loadExhibits() async {
-    // Simulate network/database delay
-    await Future.delayed(const Duration(seconds: 1));
-    
-    // TODO: Replace with actual data fetching logic
-    final mockExhibits = [
-      Exhibit(
-        id: '1',
-        name: 'Ancient Artifacts',
-        description: 'A collection of ancient artifacts from various civilizations',
-        wifiSsid: 'Museum_Ancient',
-        audioUrl: 'https://example.com/audio1.mp3',
-      ),
-      // Add more mock data or keep empty to test empty state
-    ];
-
-    if (mounted) {
-      setState(() {
-        _exhibits.addAll(mockExhibits);
-        _isLoading = false;
-      });
-    }
   }
 
   Future<void> _onUpdateExhibit(Exhibit exhibit) async {
@@ -52,25 +27,17 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
     );
 
     if (updatedExhibit != null && mounted) {
-      // Update the exhibit in the list
-      final index = _exhibits.indexWhere((e) => e.id == updatedExhibit.id);
-      if (index != -1) {
-        setState(() {
-          _exhibits[index] = updatedExhibit;
-        });
-        
-        // Show success message
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Exhibit updated successfully'),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.all(Radius.circular(10)),
-            ),
+      // The stream will automatically update the UI
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Exhibit updated successfully'),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(10)),
           ),
-        );
-      }
+        ),
+      );
     }
   }
 
@@ -80,7 +47,7 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
       backgroundColor: Colors.white,
       appBar: AppBar(
         title: const Text(
-          'Exhibit List',
+          'Exhibits',
           style: TextStyle(
             color: Colors.black,
             fontSize: 24,
@@ -95,28 +62,68 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
           onPressed: () => Navigator.pop(context),
         ),
       ),
-      body: SafeArea(
-        child: _isLoading
-            ? const _LoadingList()
-            : _exhibits.isEmpty
-                ? const _EmptyState()
-                : _buildExhibitList(),
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: Provider.of<FirebaseProvider>(context).getExhibits() as Stream<QuerySnapshot<Map<String, dynamic>>>,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Text('Error: ${snapshot.error}'),
+            );
+          }
+
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const _LoadingList();
+          }
+
+          final exhibits = snapshot.data?.docs.map((doc) {
+            return Exhibit.fromFirestore(doc);
+          }).toList() ?? [];
+
+          if (exhibits.isEmpty) {
+            return const _EmptyState();
+          }
+
+          return _buildExhibitList(exhibits);
+        },
       ),
     );
   }
 
-  Widget _buildExhibitList() {
+  Widget _buildExhibitList(List<Exhibit> exhibits) {
     return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _exhibits.length,
+      padding: const EdgeInsets.all(16.0),
+      itemCount: exhibits.length,
       itemBuilder: (context, index) {
-        final exhibit = _exhibits[index];
+        final exhibit = exhibits[index];
         return _ExhibitCard(
           exhibit: exhibit,
           onUpdate: () => _onUpdateExhibit(exhibit),
         );
       },
     );
+  }
+  
+  Future<void> _onDeleteExhibit(String id) async {
+    final firebaseProvider = Provider.of<FirebaseProvider>(context, listen: false);
+    final success = await firebaseProvider.deleteExhibit(id);
+    
+    if (mounted) {
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Exhibit deleted successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete exhibit: ${firebaseProvider.error}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 }
 
@@ -125,10 +132,10 @@ class _ExhibitCard extends StatelessWidget {
   final VoidCallback onUpdate;
 
   const _ExhibitCard({
-    Key? key,
+    super.key,
     required this.exhibit,
     required this.onUpdate,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -216,12 +223,12 @@ class _InfoRow extends StatelessWidget {
   final Color? valueColor;
 
   const _InfoRow({
-    Key? key,
+    super.key,
     required this.icon,
     required this.label,
     required this.value,
     this.valueColor,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -250,7 +257,7 @@ class _InfoRow extends StatelessWidget {
 }
 
 class _LoadingList extends StatelessWidget {
-  const _LoadingList({Key? key}) : super(key: key);
+  const _LoadingList({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -308,7 +315,7 @@ class _LoadingList extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({Key? key}) : super(key: key);
+  const _EmptyState({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -363,3 +370,4 @@ class _EmptyState extends StatelessWidget {
     );
   }
 }
+

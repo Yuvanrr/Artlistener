@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "909895170705",
+    "project_id": "artlistener-1",
+    "storage_bucket": "artlistener-1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:909895170705:android:2f2ce2e94de548029edd30",
+        "android_client_info": {
+          "package_name": "com.example.artlistener_1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBQi9KonWprJctifAuuQx5IlypKsTg3kR8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
