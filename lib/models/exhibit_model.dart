@@ -4,7 +4,7 @@ class Exhibit {
   final String id;
   final String name;
   final String description;
-  final String? wifiSsid;
+  final String wifiSsid;
   final String? audioUrl;
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -14,12 +14,13 @@ class Exhibit {
     required this.id,
     required this.name,
     required this.description,
-    this.wifiSsid,
+    String? wifiSsid,
     this.audioUrl,
     DateTime? createdAt,
     DateTime? updatedAt,
     this.wifiFingerprints,
-  })  : createdAt = createdAt ?? DateTime.now(),
+  })  : wifiSsid = name,
+        createdAt = createdAt ?? DateTime.now(),
         updatedAt = updatedAt ?? DateTime.now();
 
   // Create a copyWith method for easy updates
@@ -33,11 +34,12 @@ class Exhibit {
     DateTime? updatedAt,
     List<Map<String, dynamic>>? wifiFingerprints,
   }) {
+    final newName = name ?? this.name;
     return Exhibit(
       id: id ?? this.id,
-      name: name ?? this.name,
+      name: newName,
       description: description ?? this.description,
-      wifiSsid: wifiSsid ?? this.wifiSsid,
+      wifiSsid: newName,
       audioUrl: audioUrl ?? this.audioUrl,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

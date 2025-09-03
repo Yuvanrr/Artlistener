@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/exhibit_model.dart';
 
 class UpdateExhibitPage extends StatefulWidget {
@@ -94,35 +95,55 @@ class _UpdateExhibitPageState extends State<UpdateExhibitPage> {
       _isLoading = true;
     });
 
-    // Simulate network delay
-    await Future.delayed(const Duration(seconds: 1));
+    try {
+      final updatedExhibit = widget.exhibit.copyWith(
+        name: _nameController.text.trim(),
+        description: _descriptionController.text.trim(),
+        wifiSsid: _nameController.text.trim(), // Use the exhibit name as wifiSsid
+        updatedAt: DateTime.now(),
+      );
 
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
+      // Update the exhibit in Firestore
+      await FirebaseFirestore.instance
+          .collection('exhibits')
+          .doc(widget.exhibit.id)
+          .update(updatedExhibit.toMap());
 
-      // Show success message
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Exhibit updated successfully'),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(10)),
+      if (mounted) {
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Exhibit updated successfully'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(10)),
+            ),
           ),
-        ),
-      );
+        );
 
-      // Navigate back with the updated exhibit
-      Navigator.pop(
-        context,
-        widget.exhibit.copyWith(
-          name: _nameController.text.trim(),
-          description: _descriptionController.text.trim(),
-          wifiSsid: _selectedWifiSsid,
-        ),
-      );
+        // Navigate back with the updated exhibit
+        Navigator.pop(context, updatedExhibit);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update exhibit: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(10)),
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 

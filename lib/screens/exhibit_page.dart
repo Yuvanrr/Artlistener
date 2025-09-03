@@ -10,17 +10,19 @@ enum AudioPlayerState {
 }
 
 class ExhibitPage extends StatefulWidget {
-  const ExhibitPage({super.key});
+  final Map<String, dynamic> exhibit;
+  
+  const ExhibitPage({super.key, required this.exhibit});
 
   @override
   State<ExhibitPage> createState() => _ExhibitPageState();
 }
 
 class _ExhibitPageState extends State<ExhibitPage> {
-  // These would typically come from an API or data source
-  String? exhibitName; // Set to null to simulate no data
-  String? exhibitDescription; // Set to null to simulate no data
-  String? audioUrl; // URL to the audio description
+  // Exhibit data
+  late String exhibitName;
+  late String exhibitDescription;
+  late String? audioUrl; // URL to the audio description
   
   // Audio player
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -32,10 +34,15 @@ class _ExhibitPageState extends State<ExhibitPage> {
   @override
   void initState() {
     super.initState();
-    // Initialize with sample data - replace with actual data from your database
-    exhibitName = 'Sample Exhibit';
-    exhibitDescription = 'This is a sample exhibit description. It would be replaced with the actual description from your database.';
-    audioUrl = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'; // Sample audio URL for testing
+    // Initialize with the passed exhibit data
+    exhibitName = widget.exhibit['name'] ?? 'Unnamed Exhibit';
+    exhibitDescription = widget.exhibit['description'] ?? 'No description available.';
+    audioUrl = widget.exhibit['audioUrl'];
+    
+    // If we have a WiFi fingerprint in the exhibit, you could log it for debugging
+    if (widget.exhibit.containsKey('wifiFingerprint')) {
+      print('Exhibit has WiFi fingerprint data');
+    }
     
     // Set up audio player listeners
     _audioPlayer.onPlayerStateChanged.listen((PlayerState state) {
@@ -172,7 +179,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
           children: [
             // Exhibit Name
             Text(
-              exhibitName ?? 'Exhibit not found',
+              exhibitName,
               style: const TextStyle(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
@@ -233,8 +240,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
                 ),
                 child: SingleChildScrollView(
                   child: Text(
-                    exhibitDescription ?? 
-                    'Exhibit description has not been retrieved or is unable to retrieve due to server issues.',
+                    exhibitDescription,
                     style: const TextStyle(
                       fontSize: 16,
                       color: Colors.black87,

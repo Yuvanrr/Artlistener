@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:artlistener_1/services/wifi_service.dart';
 import 'exhibit_page.dart';
 import 'admin_login_page.dart';
 
@@ -13,6 +14,9 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _tapCount = 0;
   DateTime? _lastTapTime;
+
+  final WifiService _wifiService = WifiService();
+  bool _isLoading = false;
 
   void _handleTitleTap() {
     final now = DateTime.now();
@@ -32,6 +36,48 @@ class _HomePageState extends State<HomePage> {
         context,
         MaterialPageRoute(builder: (context) => const AdminLoginPage()),
       );
+    }
+  }
+
+  Future<void> _findAndNavigateToExhibit() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final exhibit = await _wifiService.findMatchingExhibit();
+      
+      if (!mounted) return;
+      
+      if (exhibit != null) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ExhibitPage(exhibit: exhibit),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No matching exhibit found nearby.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error finding exhibit: ${e.toString()}'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -63,12 +109,7 @@ class _HomePageState extends State<HomePage> {
               width: 250,
               height: 60,
               child: ElevatedButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const ExhibitPage()),
-                  );
-                },
+                onPressed: _isLoading ? null : _findAndNavigateToExhibit,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.black,
                   shape: RoundedRectangleBorder(
@@ -76,9 +117,9 @@ class _HomePageState extends State<HomePage> {
                   ),
                   padding: const EdgeInsets.symmetric(vertical: 15),
                 ),
-                child: const Text(
-                  'Get Exhibit Description',
-                  style: TextStyle(
+                child: Text(
+                  _isLoading ? 'Searching...' : 'Get Exhibit Description',
+                  style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w500,
                     color: Colors.white,
