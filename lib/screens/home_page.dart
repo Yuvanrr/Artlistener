@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:artlistener_1/services/wifi_service.dart';
 import 'exhibit_page.dart';
 import 'admin_login_page.dart';

@@ -98,6 +98,7 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
         return _ExhibitCard(
           exhibit: exhibit,
           onUpdate: () => _onUpdateExhibit(exhibit),
+          onDelete: _onDeleteExhibit,
         );
       },
     );
@@ -130,11 +131,12 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
 class _ExhibitCard extends StatelessWidget {
   final Exhibit exhibit;
   final VoidCallback onUpdate;
+  final Function(String) onDelete;
 
   const _ExhibitCard({
-    super.key,
     required this.exhibit,
     required this.onUpdate,
+    required this.onDelete,
   });
 
   @override
@@ -165,10 +167,19 @@ class _ExhibitCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.edit, color: Colors.black),
-                  onPressed: onUpdate,
-                  tooltip: 'Update Exhibit',
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.edit, color: Colors.black),
+                      onPressed: onUpdate,
+                      tooltip: 'Update Exhibit',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () => _showDeleteConfirmation(context),
+                      tooltip: 'Delete Exhibit',
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -183,14 +194,12 @@ class _ExhibitCard extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 12),
-            if (exhibit.wifiSsid != null) ...[
-              _InfoRow(
-                icon: Icons.wifi,
-                label: 'WiFi Network',
-                value: exhibit.wifiSsid!,
-              ),
-              const SizedBox(height: 8),
-            ],
+            _InfoRow(
+              icon: Icons.wifi,
+              label: 'WiFi Network',
+              value: exhibit.wifiSsid,
+            ),
+            const SizedBox(height: 8),
             if (exhibit.audioUrl != null) ...[
               _InfoRow(
                 icon: Icons.audio_file,
@@ -214,6 +223,30 @@ class _ExhibitCard extends StatelessWidget {
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year}';
   }
+
+  void _showDeleteConfirmation(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Exhibit'),
+        content: const Text('Are you sure you want to delete this exhibit? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              onDelete(exhibit.id);
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _InfoRow extends StatelessWidget {
@@ -223,7 +256,6 @@ class _InfoRow extends StatelessWidget {
   final Color? valueColor;
 
   const _InfoRow({
-    super.key,
     required this.icon,
     required this.label,
     required this.value,
@@ -257,7 +289,7 @@ class _InfoRow extends StatelessWidget {
 }
 
 class _LoadingList extends StatelessWidget {
-  const _LoadingList({super.key});
+  const _LoadingList();
 
   @override
   Widget build(BuildContext context) {
@@ -308,7 +340,7 @@ class _LoadingList extends StatelessWidget {
               child: Placeholder(),
             ),
           ],
-        ),8
+        ),
       ),
     );
   }

@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "com.example.artlistener_1"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = "27.0.12077973"
     buildToolsVersion = "34.0.0"
 

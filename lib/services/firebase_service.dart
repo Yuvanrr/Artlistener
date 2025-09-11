@@ -10,7 +10,9 @@ class FirebaseService {
   User? get currentUser => _auth.currentUser;
 
   // Collection references
-  final CollectionReference _exhibitsCollection = FirebaseFirestore.instance.collection('exhibits');
+  final CollectionReference _exhibitsCollection;
+
+  FirebaseService() : _exhibitsCollection = FirebaseFirestore.instance.collection('exhibits');
 
   // Authentication methods
   Future<UserCredential?> signInWithEmailAndPassword(String email, String password) async {
