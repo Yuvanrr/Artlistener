@@ -308,7 +308,7 @@ class _LoadingList extends StatelessWidget {
               child: Placeholder(),
             ),
           ],
-        ),
+        ),8
       ),
     );
   }
