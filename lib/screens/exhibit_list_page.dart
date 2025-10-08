@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/exhibit_model.dart';
 import 'update_exhibit_page.dart';
 
@@ -10,72 +11,12 @@ class ExhibitListPage extends StatefulWidget {
 }
 
 class _ExhibitListPageState extends State<ExhibitListPage> {
-  bool _isLoading = true;
-  final List<Exhibit> _exhibits = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadExhibits();
-  }
-
-  Future<void> _loadExhibits() async {
-    // Simulate network/database delay
-    await Future.delayed(const Duration(seconds: 1));
-    
-    // TODO: Replace with actual data fetching logic
-    final mockExhibits = [
-      Exhibit(
-        id: '1',
-        name: 'Ancient Artifacts',
-        description: 'A collection of ancient artifacts from various civilizations',
-        wifiSsid: 'Museum_Ancient',
-        audioUrl: 'https://example.com/audio1.mp3',
-      ),
-      // Add more mock data or keep empty to test empty state
-    ];
-
-    if (mounted) {
-      setState(() {
-        _exhibits.addAll(mockExhibits);
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _onUpdateExhibit(Exhibit exhibit) async {
-    final updatedExhibit = await Navigator.push<Exhibit?>(
-      context,
-      MaterialPageRoute(
-        builder: (context) => UpdateExhibitPage(exhibit: exhibit),
-      ),
-    );
-
-    if (updatedExhibit != null && mounted) {
-      // Update the exhibit in the list
-      final index = _exhibits.indexWhere((e) => e.id == updatedExhibit.id);
-      if (index != -1) {
-        setState(() {
-          _exhibits[index] = updatedExhibit;
-        });
-        
-        // Show success message
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Exhibit updated successfully'),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.all(Radius.circular(10)),
-            ),
-          ),
-        );
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
+    final query = FirebaseFirestore.instance
+        .collection('c_guru')
+        .orderBy('timestamp', descending: true);
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -96,27 +37,98 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
         ),
       ),
       body: SafeArea(
-        child: _isLoading
-            ? const _LoadingList()
-            : _exhibits.isEmpty
-                ? const _EmptyState()
-                : _buildExhibitList(),
+        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: query.snapshots(),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Text(
+                    'Failed to load exhibits: ${snapshot.error}',
+                    style: const TextStyle(color: Colors.red),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              );
+            }
+
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const _LoadingList();
+            }
+
+            final docs = snapshot.data?.docs ?? [];
+            if (docs.isEmpty) {
+              return const _EmptyState();
+            }
+
+            // Map Firestore docs -> Exhibit model
+            final exhibits = docs.map((doc) {
+              final data = doc.data();
+              final name = (data['name'] ?? '').toString();
+              final description = (data['description'] ?? '').toString();
+              final wifiSsid = (data['wifiSsid'] as String?)?.trim();
+              final audioUrl = (data['audioUrl'] as String?);
+              // Firestore serverTimestamp can be null on first write; fall back to doc write time or now
+              DateTime createdAt;
+              final ts = data['timestamp'];
+              if (ts is Timestamp) {
+                createdAt = ts.toDate();
+              } else {
+                createdAt = doc.metadata.hasPendingWrites
+                    ? DateTime.now()
+                    : DateTime.now();
+              }
+
+              return Exhibit(
+                id: doc.id,
+                name: name,
+                description: description,
+                wifiSsid: (wifiSsid != null && wifiSsid.isNotEmpty) ? wifiSsid : null,
+                audioUrl: (audioUrl != null && audioUrl.isNotEmpty) ? audioUrl : null,
+                createdAt: createdAt,
+              );
+            }).toList();
+
+            return ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: exhibits.length,
+              itemBuilder: (context, index) {
+                final exhibit = exhibits[index];
+                return _ExhibitCard(
+                  exhibit: exhibit,
+                  onUpdate: () => _onUpdateExhibit(exhibit),
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }
 
-  Widget _buildExhibitList() {
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _exhibits.length,
-      itemBuilder: (context, index) {
-        final exhibit = _exhibits[index];
-        return _ExhibitCard(
-          exhibit: exhibit,
-          onUpdate: () => _onUpdateExhibit(exhibit),
-        );
-      },
+  Future<void> _onUpdateExhibit(Exhibit exhibit) async {
+    final updatedExhibit = await Navigator.push<Exhibit?>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => UpdateExhibitPage(exhibit: exhibit),
+      ),
     );
+
+    if (!mounted) return;
+
+    if (updatedExhibit != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Exhibit updated successfully'),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(10)),
+          ),
+        ),
+      );
+    }
   }
 }
 
@@ -256,7 +268,7 @@ class _LoadingList extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListView.builder(
       padding: const EdgeInsets.all(16),
-      itemCount: 3, // Number of shimmer placeholders
+      itemCount: 3,
       itemBuilder: (context, index) => _buildShimmerCard(),
     );
   }
@@ -274,32 +286,13 @@ class _LoadingList extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Title placeholder
-            SizedBox(
-              width: 200,
-              height: 24,
-              child: Placeholder(),
-            ),
+            SizedBox(width: 200, height: 24, child: Placeholder()),
             SizedBox(height: 8),
-            // Description placeholder
-            SizedBox(
-              width: double.infinity,
-              height: 16,
-              child: Placeholder(),
-            ),
+            SizedBox(width: double.infinity, height: 16, child: Placeholder()),
             SizedBox(height: 8),
-            // Info row placeholders
-            SizedBox(
-              width: 150,
-              height: 16,
-              child: Placeholder(),
-            ),
+            SizedBox(width: 150, height: 16, child: Placeholder()),
             SizedBox(height: 8),
-            SizedBox(
-              width: 120,
-              height: 16,
-              child: Placeholder(),
-            ),
+            SizedBox(width: 120, height: 16, child: Placeholder()),
           ],
         ),
       ),
@@ -316,11 +309,7 @@ class _EmptyState extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.museum_outlined,
-            size: 64,
-            color: Colors.grey[400],
-          ),
+          Icon(Icons.museum_outlined, size: 64, color: Colors.grey[400]),
           const SizedBox(height: 16),
           Text(
             'No Exhibits Found',
@@ -344,10 +333,7 @@ class _EmptyState extends StatelessWidget {
           ),
           const SizedBox(height: 24),
           ElevatedButton(
-            onPressed: () {
-              // TODO: Navigate to add exhibit page
-              Navigator.pop(context);
-            },
+            onPressed: () => Navigator.pop(context),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.black,
               foregroundColor: Colors.white,

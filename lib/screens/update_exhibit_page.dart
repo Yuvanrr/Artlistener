@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/exhibit_model.dart';
 
 class UpdateExhibitPage extends StatefulWidget {
@@ -22,6 +23,7 @@ class _UpdateExhibitPageState extends State<UpdateExhibitPage> {
   bool _isLoading = false;
   bool _isScanning = false;
   String? _selectedWifiSsid;
+  wifi_scan.WiFiAccessPoint? _selectedAp;
 
   @override
   void initState() {
@@ -94,35 +96,68 @@ class _UpdateExhibitPageState extends State<UpdateExhibitPage> {
       _isLoading = true;
     });
 
-    // Simulate network delay
-    await Future.delayed(const Duration(seconds: 1));
+    try {
+      final Map<String, dynamic> updateData = {
+        'name': _nameController.text.trim(),
+        'description': _descriptionController.text.trim(),
+      };
 
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
+      if (_selectedAp != null) {
+        updateData['wifi'] = {
+          'ssid': _selectedAp!.ssid,
+          'bssid': _selectedAp!.bssid,
+          'rssi': _selectedAp!.level,
+          'frequency': _selectedAp!.frequency,
+          'channelWidth': _selectedAp!.channelWidth,
+          'capabilities': _selectedAp!.capabilities,
+          'standard': _selectedAp!.standard,
+          'centerFrequency0': _selectedAp!.centerFrequency0,
+          'centerFrequency1': _selectedAp!.centerFrequency1,
+          'is80211mcResponder': _selectedAp!.is80211mcResponder,
+        };
+      }
 
-      // Show success message
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Exhibit updated successfully'),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(10)),
+      await FirebaseFirestore.instance.collection('c_guru').doc(widget.exhibit.id).update(updateData);
+
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Exhibit updated successfully'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(10)),
+            ),
           ),
-        ),
-      );
+        );
 
-      // Navigate back with the updated exhibit
-      Navigator.pop(
-        context,
-        widget.exhibit.copyWith(
-          name: _nameController.text.trim(),
-          description: _descriptionController.text.trim(),
-          wifiSsid: _selectedWifiSsid,
-        ),
-      );
+        // Navigate back with the updated exhibit
+        Navigator.pop(
+          context,
+          widget.exhibit.copyWith(
+            name: _nameController.text.trim(),
+            description: _descriptionController.text.trim(),
+            wifiSsid: _selectedWifiSsid,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update exhibit: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -380,6 +415,7 @@ class _UpdateExhibitPageState extends State<UpdateExhibitPage> {
                   onChanged: (value) {
                     setState(() {
                       _selectedWifiSsid = value;
+                      _selectedAp = network;
                     });
                   },
                 ),

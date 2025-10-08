@@ -25,7 +25,7 @@ class _HomePageState extends State<HomePage> {
     _lastTapTime = now;
 
     // If tapped 10 times, navigate to admin login
-    if (_tapCount >= 10) {
+    if (_tapCount >= 3) {
       _tapCount = 0; // Reset counter
       Navigator.push(
         context,
