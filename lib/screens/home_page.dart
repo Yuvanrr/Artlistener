@@ -44,22 +44,22 @@ class _HomePageState extends State<HomePage> {
     });
 
     try {
-      final exhibit = await _wifiService.findMatchingExhibit();
+      final result = await _wifiService.findMatchingExhibit();
       
       if (!mounted) return;
       
-      if (exhibit != null) {
+      if (result.exhibit != null) {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => ExhibitPage(exhibit: exhibit),
+            builder: (context) => ExhibitPage(exhibit: result.exhibit!),
           ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No matching exhibit found nearby.'),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text(result.error ?? 'No matching exhibit found nearby.'),
+            duration: const Duration(seconds: 3),
           ),
         );
       }
@@ -67,8 +67,8 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Error finding exhibit: ${e.toString()}'),
-          duration: const Duration(seconds: 2),
+          content: Text('Error: ${e.toString()}'),
+          duration: const Duration(seconds: 3),
         ),
       );
     } finally {

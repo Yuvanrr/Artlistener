@@ -9,6 +9,7 @@ class Exhibit {
   final DateTime createdAt;
   final DateTime updatedAt;
   final List<Map<String, dynamic>>? wifiFingerprints;
+  final List<Map<String, dynamic>>? fingerprintZones; // Multiple reference points
 
   Exhibit({
     required this.id,
@@ -19,6 +20,7 @@ class Exhibit {
     DateTime? createdAt,
     DateTime? updatedAt,
     this.wifiFingerprints,
+    this.fingerprintZones,
   })  : wifiSsid = name,
         createdAt = createdAt ?? DateTime.now(),
         updatedAt = updatedAt ?? DateTime.now();
@@ -33,6 +35,7 @@ class Exhibit {
     DateTime? createdAt,
     DateTime? updatedAt,
     List<Map<String, dynamic>>? wifiFingerprints,
+    List<Map<String, dynamic>>? fingerprintZones,
   }) {
     final newName = name ?? this.name;
     return Exhibit(
@@ -44,6 +47,7 @@ class Exhibit {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       wifiFingerprints: wifiFingerprints ?? this.wifiFingerprints,
+      fingerprintZones: fingerprintZones ?? this.fingerprintZones,
     );
   }
 
@@ -55,6 +59,7 @@ class Exhibit {
       'wifiSsid': wifiSsid,
       'audioUrl': audioUrl,
       'wifiFingerprints': wifiFingerprints,
+      'fingerprintZones': fingerprintZones,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
     };
@@ -69,6 +74,7 @@ class Exhibit {
       wifiSsid: map['wifiSsid'] as String?,
       audioUrl: map['audioUrl'] as String?,
       wifiFingerprints: (map['wifiFingerprints'] as List?)?.cast<Map<String, dynamic>>(),
+      fingerprintZones: (map['fingerprintZones'] as List?)?.cast<Map<String, dynamic>>(),
       createdAt: map['createdAt'] != null
           ? DateTime.tryParse(map['createdAt'].toString()) ?? DateTime.now()
           : DateTime.now(),

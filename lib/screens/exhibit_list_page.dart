@@ -347,7 +347,7 @@ class _LoadingList extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({super.key});
+  const _EmptyState();
 
   @override
   Widget build(BuildContext context) {
@@ -381,7 +381,7 @@ class _EmptyState extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 24),uuu
           ElevatedButton(
             onPressed: () {
               // TODO: Navigate to add exhibit page

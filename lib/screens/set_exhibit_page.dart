@@ -15,6 +15,8 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
   final _exhibitNameController = TextEditingController();
   final _exhibitDescController = TextEditingController();
   List<wifi_scan.WiFiAccessPoint> _wifiNetworks = [];
+  List<Map<String, dynamic>> _fingerprintZones = []; // Store multiple zones
+  int _currentZoneNumber = 1;
   bool _isLoading = false;
   bool _isSubmitting = false;
 
@@ -72,6 +74,60 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     }
   }
 
+  Future<void> _addReferencePoint() async {
+    if (_wifiNetworks.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please scan for WiFi networks first'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    // Create fingerprint from current WiFi scan
+    final fingerprint = {
+      for (var ap in _wifiNetworks) ap.bssid: ap.level
+    };
+
+    setState(() {
+      _fingerprintZones.add({
+        'zoneNumber': _currentZoneNumber,
+        'fingerprint': fingerprint,
+        'timestamp': DateTime.now().toIso8601String(),
+        'networkCount': _wifiNetworks.length,
+      });
+      _currentZoneNumber++;
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Reference point ${_fingerprintZones.length} added successfully!'),
+          backgroundColor: Colors.green[700],
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+
+    // Automatically scan again for next point
+    await _scanWifiNetworks();
+  }
+
+  void _removeReferencePoint(int index) {
+    setState(() {
+      _fingerprintZones.removeAt(index);
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Reference point removed'),
+        backgroundColor: Colors.orange,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _exhibitNameController.dispose();
@@ -92,7 +148,7 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     try {
       final firebaseProvider = Provider.of<FirebaseProvider>(context, listen: false);
       
-      // Prepare WiFi fingerprint data
+      // Prepare WiFi fingerprint data - use zones instead of single fingerprints
       print('Found ${_wifiNetworks.length} WiFi networks');
       final wifiFingerprints = _wifiNetworks.map((ap) => {
         'ssid': ap.ssid,
@@ -102,12 +158,13 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
         'capabilities': ap.capabilities,
       }).toList();
 
-      // Prepare exhibit data
+      // Prepare exhibit data with fingerprint zones
       final exhibitData = {
         'name': _exhibitNameController.text.trim(),
         'description': _exhibitDescController.text.trim(),
         'wifiFingerprints': wifiFingerprints,
         'wifiSsid': _wifiNetworks.isNotEmpty ? _wifiNetworks[0].ssid : '',
+        'fingerprintZones': _fingerprintZones, // Add fingerprint zones
         'createdAt': DateTime.now().toIso8601String(),
         'updatedAt': DateTime.now().toIso8601String(),
       };
@@ -144,6 +201,8 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
           _formKey.currentState!.reset();
           setState(() {
             _wifiNetworks.clear();
+            _fingerprintZones.clear();
+            _currentZoneNumber = 1;
           });
           _scanWifiNetworks();
         } else {
@@ -287,6 +346,83 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
                 ),
                 
                 const SizedBox(height: 28),
+                
+                // Reference Points Section
+                if (_fingerprintZones.isNotEmpty) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Reference Points (${_fingerprintZones.length})',
+                        style: TextStyle(
+                          color: Colors.grey[800],
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  ListView.separated(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _fingerprintZones.length,
+                    separatorBuilder: (context, index) => Divider(height: 1, color: Colors.grey[200]),
+                    itemBuilder: (context, index) {
+                      final zone = _fingerprintZones[index];
+                      return ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                        leading: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.green[50],
+                            shape: BoxShape.circle,
+                          ),
+                          child: Text(
+                            '${zone['zoneNumber']}',
+                            style: TextStyle(
+                              color: Colors.green[700],
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        title: Text(
+                          'Point ${zone['zoneNumber']}',
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                        subtitle: Text(
+                          '${zone['networkCount']} networks • ${zone['timestamp']?.toString().substring(11, 19) ?? ''}',
+                          style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                        ),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                          onPressed: () => _removeReferencePoint(index),
+                          tooltip: 'Remove Point',
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                
+                // Add Reference Point Button
+                if (_wifiNetworks.isNotEmpty) ...[
+                  ElevatedButton.icon(
+                    onPressed: _addReferencePoint,
+                    icon: const Icon(Icons.add_location, size: 20),
+                    label: Text(_fingerprintZones.isEmpty ? 'ADD REFERENCE POINT' : 'ADD ANOTHER POINT'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green[600],
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      elevation: 0,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 
                 // WiFi Networks Section
                 Row(
