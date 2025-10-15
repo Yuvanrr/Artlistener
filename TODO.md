@@ -1,0 +1,4 @@
+- [ ] Add cmakeVersion in android/app/build.gradle.kts
+- [ ] Run flutter clean
+- [ ] Run flutter pub get
+- [ ] Test build with flutter run

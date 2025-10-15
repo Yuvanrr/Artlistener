@@ -11,8 +11,81 @@ class ExhibitListPage extends StatefulWidget {
 }
 
 class _ExhibitListPageState extends State<ExhibitListPage> {
+  // 1. Delete Function Implementation
+  Future<void> _deleteExhibit(String docId, String exhibitName) async {
+    // Show confirmation dialog before deleting
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Deletion'),
+        content: Text('Are you sure you want to delete the exhibit "$exhibitName"? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await FirebaseFirestore.instance.collection('c_guru').doc(docId).delete();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Exhibit "$exhibitName" deleted successfully.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to delete exhibit: ${e.toString()}'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _onUpdateExhibit(Exhibit exhibit) async {
+    // This function remains the same, handling navigation and confirmation of update.
+    final updatedExhibit = await Navigator.push<Exhibit?>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => UpdateExhibitPage(exhibit: exhibit),
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (updatedExhibit != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Exhibit update flow completed.'),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(10)),
+          ),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Order by timestamp to show the newest exhibits first
     final query = FirebaseFirestore.instance
         .collection('c_guru')
         .orderBy('timestamp', descending: true);
@@ -67,24 +140,36 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
               final data = doc.data();
               final name = (data['name'] ?? '').toString();
               final description = (data['description'] ?? '').toString();
-              final wifiSsid = (data['wifiSsid'] as String?)?.trim();
-              final audioUrl = (data['audioUrl'] as String?);
-              // Firestore serverTimestamp can be null on first write; fall back to doc write time or now
+              
+              // Logic to extract WiFi SSID (as updated previously)
+              String? wifiSsid;
+              final List<dynamic>? fingerprint = data['wifi_fingerprint'] as List<dynamic>?;
+              if (fingerprint != null && fingerprint.isNotEmpty) {
+                  final strongestAp = fingerprint.first as Map<String, dynamic>;
+                  wifiSsid = strongestAp['ssid']?.toString().trim();
+              }
+              else if (data.containsKey('selected_ap_info')) {
+                  final apInfo = data['selected_ap_info'] as Map<String, dynamic>;
+                  wifiSsid = apInfo['ssid']?.toString().trim();
+              }
+              
+              // Handle audio URL
+              final audioUrl = (data['audioUrl'] as String?); 
+              
+              // Handle Timestamp conversion
               DateTime createdAt;
               final ts = data['timestamp'];
               if (ts is Timestamp) {
                 createdAt = ts.toDate();
               } else {
-                createdAt = doc.metadata.hasPendingWrites
-                    ? DateTime.now()
-                    : DateTime.now();
+                createdAt = doc.metadata.hasPendingWrites ? DateTime.now() : DateTime.now();
               }
 
               return Exhibit(
                 id: doc.id,
                 name: name,
                 description: description,
-                wifiSsid: (wifiSsid != null && wifiSsid.isNotEmpty) ? wifiSsid : null,
+                wifiSsid: (wifiSsid != null && wifiSsid.isNotEmpty) ? wifiSsid : 'N/A',
                 audioUrl: (audioUrl != null && audioUrl.isNotEmpty) ? audioUrl : null,
                 createdAt: createdAt,
               );
@@ -98,6 +183,7 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
                 return _ExhibitCard(
                   exhibit: exhibit,
                   onUpdate: () => _onUpdateExhibit(exhibit),
+                  onDelete: () => _deleteExhibit(exhibit.id, exhibit.name), // Pass delete action
                 );
               },
             );
@@ -106,40 +192,19 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
       ),
     );
   }
-
-  Future<void> _onUpdateExhibit(Exhibit exhibit) async {
-    final updatedExhibit = await Navigator.push<Exhibit?>(
-      context,
-      MaterialPageRoute(
-        builder: (context) => UpdateExhibitPage(exhibit: exhibit),
-      ),
-    );
-
-    if (!mounted) return;
-
-    if (updatedExhibit != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Exhibit updated successfully'),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(10)),
-          ),
-        ),
-      );
-    }
-  }
 }
 
+// 2. Updated ExhibitCard to include the Delete button
 class _ExhibitCard extends StatelessWidget {
   final Exhibit exhibit;
   final VoidCallback onUpdate;
+  final VoidCallback onDelete; // New Delete callback
 
   const _ExhibitCard({
     Key? key,
     required this.exhibit,
     required this.onUpdate,
+    required this.onDelete, // Required in constructor
   }) : super(key: key);
 
   @override
@@ -170,10 +235,21 @@ class _ExhibitCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.edit, color: Colors.black),
-                  onPressed: onUpdate,
-                  tooltip: 'Update Exhibit',
+                // 3. Action Buttons (Edit and Delete)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.edit, color: Colors.black),
+                      onPressed: onUpdate,
+                      tooltip: 'Update Exhibit',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      onPressed: onDelete, // Call the new delete action
+                      tooltip: 'Delete Exhibit',
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -188,14 +264,12 @@ class _ExhibitCard extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 12),
-            if (exhibit.wifiSsid != null) ...[
-              _InfoRow(
-                icon: Icons.wifi,
-                label: 'WiFi Network',
-                value: exhibit.wifiSsid!,
-              ),
-              const SizedBox(height: 8),
-            ],
+            _InfoRow(
+              icon: Icons.wifi,
+              label: 'WiFi Network',
+              value: exhibit.wifiSsid!,
+            ),
+            const SizedBox(height: 8),
             if (exhibit.audioUrl != null) ...[
               _InfoRow(
                 icon: Icons.audio_file,
@@ -220,6 +294,8 @@ class _ExhibitCard extends StatelessWidget {
     return '${date.day}/${date.month}/${date.year}';
   }
 }
+
+// --- Supporting Widgets (Unchanged) ---
 
 class _InfoRow extends StatelessWidget {
   final IconData icon;
