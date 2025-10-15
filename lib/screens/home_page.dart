@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'exhibit_page.dart';
 import 'admin_login_page.dart';
-import 'dart:math'; // For random quote selection
+import 'auto_narration_page.dart'; // NEW IMPORT
+import 'dart:math';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -29,7 +30,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _currentQuote = _getRandomQuote(); // Set initial quote
+    _currentQuote = _getRandomQuote();
   }
 
   String _getRandomQuote() {
@@ -40,7 +41,6 @@ class _HomePageState extends State<HomePage> {
   void _handleTitleTap() {
     final now = DateTime.now();
     
-    // Reset tap count if more than 1 second has passed since last tap
     if (_lastTapTime != null && now.difference(_lastTapTime!) > const Duration(seconds: 1)) {
       _tapCount = 0;
     }
@@ -48,9 +48,8 @@ class _HomePageState extends State<HomePage> {
     _tapCount++;
     _lastTapTime = now;
 
-    // Secret tap gesture: If tapped 3 times quickly, navigate to admin login
     if (_tapCount >= 3) {
-      _tapCount = 0; // Reset counter
+      _tapCount = 0;
       Navigator.push(
         context,
         MaterialPageRoute(builder: (context) => const AdminLoginPage()),
@@ -61,20 +60,19 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black, // Dark background for high contrast
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        // Use GestureDetector on the title to maintain the hidden admin login feature
         title: GestureDetector(
           onTap: _handleTitleTap,
           child: const Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.museum, color: Colors.amber, size: 30), // Highlighted icon
+              Icon(Icons.museum, color: Colors.amber, size: 30),
               SizedBox(width: 10),
               Text(
                 'Artlistener',
                 style: TextStyle(
-                  color: Colors.white, // White text for contrast
+                  color: Colors.white,
                   fontSize: 30,
                   fontWeight: FontWeight.bold,
                   letterSpacing: 1.0,
@@ -84,7 +82,7 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
         centerTitle: true,
-        backgroundColor: Colors.transparent, // Transparent to show body background
+        backgroundColor: Colors.transparent,
         elevation: 0,
       ),
       body: Center(
@@ -101,11 +99,11 @@ class _HomePageState extends State<HomePage> {
                 style: TextStyle(
                   fontSize: 18,
                   fontStyle: FontStyle.italic,
-                  color: Colors.white70, // Slightly subdued for elegance
+                  color: Colors.white70,
                   height: 1.5,
                 ),
               ),
-              const SizedBox(height: 60), // Increased space
+              const SizedBox(height: 60),
 
               // Button 1: Manual Exhibit Search
               _buildFeatureCard(
@@ -119,33 +117,30 @@ class _HomePageState extends State<HomePage> {
                     MaterialPageRoute(builder: (context) => const ExhibitPage()),
                   );
                 },
-                color: Colors.amber, // Contrasting vibrant color
-                iconColor: Colors.black, // Dark icon for contrast
-                textColor: Colors.black, // Dark text for contrast
+                color: Colors.amber,
+                iconColor: Colors.black,
+                textColor: Colors.black,
                 borderColor: Colors.amber,
               ),
 
-              const SizedBox(height: 24), // Space between cards
+              const SizedBox(height: 24),
 
-              // Button 2: Auto Narration Mode
+              // Button 2: Auto Narration Mode - NOW NAVIGATES
               _buildFeatureCard(
                 context,
                 icon: Icons.headphones_outlined,
                 title: 'Auto Narration Mode',
-                subtitle: 'Automatically play audio guides as you approach each exhibit (Coming Soon).',
+                subtitle: 'Automatically play audio guides as you approach each exhibit.',
                 onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Auto Narration Mode is not yet implemented.'),
-                      backgroundColor: Colors.amber,
-                      behavior: SnackBarBehavior.floating,
-                    ),
+                  Navigator.push( // NEW NAVIGATION
+                    context,
+                    MaterialPageRoute(builder: (context) => AutoNarrationPage()),
                   );
                 },
-                color: Colors.grey[850]!, // Darker grey for secondary action
-                borderColor: Colors.grey[700], // Subtle border
-                textColor: Colors.white70,
-                iconColor: Colors.white70,
+                color: Colors.grey[850]!,
+                borderColor: Colors.amber[700], // Highlight border
+                textColor: Colors.white,
+                iconColor: Colors.amber, // Highlight icon
               ),
             ],
           ),
@@ -177,7 +172,7 @@ class _HomePageState extends State<HomePage> {
           border: Border.all(color: borderColor ?? Colors.transparent, width: 2),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.4), // More pronounced shadow
+              color: Colors.black.withOpacity(0.4),
               spreadRadius: 2,
               blurRadius: 15,
               offset: const Offset(0, 8),
@@ -202,7 +197,7 @@ class _HomePageState extends State<HomePage> {
               subtitle,
               style: TextStyle(
                 fontSize: 14,
-                color: textColor.withOpacity(0.9), // Slightly more opaque
+                color: textColor.withOpacity(0.9),
               ),
             ),
           ],

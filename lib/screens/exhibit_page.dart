@@ -1,31 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:geolocator/geolocator.dart'; // For service check
+import 'location_service.dart'; // NEW IMPORT
 
 // Audio player states for the audio player
 enum AudioPlayerState { stopped, playing, paused, completed }
-
-// --- KNN HELPER FUNCTION (Assuming this is outside the class) ---
-// Calculates the Euclidean Distance squared between two Wi-Fi fingerprints.
-double _calculateEuclideanDistance(
-    Map<String, int> liveRssiMap, Map<String, int> storedRssiMap) {
-  double squaredDifferenceSum = 0.0;
-  final allBssids = {...liveRssiMap.keys, ...storedRssiMap.keys};
-  const int defaultRssi = -100;
-
-  for (final bssid in allBssids) {
-    final liveRssi = liveRssiMap[bssid] ?? defaultRssi;
-    final storedRssi = storedRssiMap[bssid] ?? defaultRssi;
-
-    final diff = (liveRssi - storedRssi);
-    squaredDifferenceSum += diff * diff;
-  }
-  return squaredDifferenceSum; 
-}
-// --- END KNN HELPER FUNCTION ---
 
 
 class ExhibitPage extends StatefulWidget {
@@ -43,14 +23,14 @@ class _ExhibitPageState extends State<ExhibitPage> {
   double? _bestDistance; // To show the confidence score
   bool _isDetecting = false; // State for scanning animation
 
-  // Audio player
+  final LocationService _locationService = LocationService(); // INSTANCE OF NEW SERVICE
+
+  // Audio player and TTS setup (Simplified for brevity)
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isPlaying = false;
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
   AudioPlayerState _playerState = AudioPlayerState.stopped;
-
-  // TTS
   final FlutterTts _tts = FlutterTts();
   bool _isSpeaking = false;
 
@@ -71,14 +51,11 @@ class _ExhibitPageState extends State<ExhibitPage> {
       _playerState = AudioPlayerState.completed;
     }));
 
-    _initTts();
-  }
-
-  Future<void> _initTts() async {
-    await _tts.setLanguage('en-US');
-    await _tts.setSpeechRate(0.5);
-    await _tts.setVolume(1.0);
-    await _tts.setPitch(1.0);
+    // TTS Setup
+    _tts.setLanguage('en-US');
+    _tts.setSpeechRate(0.5);
+    _tts.setVolume(1.0);
+    _tts.setPitch(1.0);
     _tts.setStartHandler(() => setState(() => _isSpeaking = true));
     _tts.setCompletionHandler(() => setState(() => _isSpeaking = false));
     _tts.setCancelHandler(() => setState(() => _isSpeaking = false));
@@ -93,6 +70,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
   }
 
   Future<void> _playPauseAudio() async {
+    // ... (Audio player logic remains the same)
     try {
       if (_isPlaying) {
         await _audioPlayer.pause();
@@ -111,159 +89,63 @@ class _ExhibitPageState extends State<ExhibitPage> {
     }
   }
 
-  // --- ACCURACY ENHANCEMENT: TEMPORAL AVERAGING (5 Scans) ---
-  Future<Map<String, int>> _getAveragedFingerprint(int scanCount) async {
-    final Map<String, List<int>> rssiHistory = {};
-
-    for (int i = 0; i < scanCount; i++) {
-      if (i > 0) await Future.delayed(const Duration(milliseconds: 300)); 
-      
-      await wifi_scan.WiFiScan.instance.startScan();
-      final currentScan = await wifi_scan.WiFiScan.instance.getScannedResults();
-      
-      for (var ap in currentScan) {
-          if (ap.bssid.isNotEmpty) {
-              rssiHistory.putIfAbsent(ap.bssid, () => []).add(ap.level);
-          }
-      }
-    }
-
-    final Map<String, int> averagedRssiMap = {};
-    rssiHistory.forEach((bssid, rssiList) {
-      final averageRssi = (rssiList.reduce((a, b) => a + b) / rssiList.length).round();
-      averagedRssiMap[bssid] = averageRssi;
-    });
-
-    return averagedRssiMap;
-  }
-  // -------------------------------------------------------------------
-
-  // --- KNN Matching Logic ---
+  // --- MANUAL MODE: TRIGGERS LOCATION SERVICE ---
   Future<void> _getNewExhibitDescription() async {
     if (_isDetecting) return;
     setState(() => _isDetecting = true);
 
     try {
+      // 1. Check Permissions and Location Services
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Please enable Location Services/GPS.')),
         );
-        setState(() => _isDetecting = false);
         return;
       }
-
-      final can = await wifi_scan.WiFiScan.instance.canStartScan();
-      if (can != wifi_scan.CanStartScan.yes) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Location permission required for Wi‑Fi scan')),
-        );
-        setState(() => _isDetecting = false);
-        return;
-      }
-
-      // Capture Live Fingerprint Vector using TEMPORAL AVERAGING
-      final Map<String, int> liveRssiMap = await _getAveragedFingerprint(5); 
-
-      if (liveRssiMap.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No stable Wi-Fi networks found.')),
-        );
-        setState(() => _isDetecting = false);
-        return;
-      }
-
-      // Query Firestore for all exhibits
-      final qs = await FirebaseFirestore.instance.collection('c_guru').get();
-
-      if (qs.docs.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No exhibits in database')),
-        );
-        setState(() => _isDetecting = false);
-        return;
-      }
-
-      // Calculate Distance (KNN step)
-      final List<Map<String, dynamic>> matchResults = [];
       
-      for (final doc in qs.docs) {
-        final data = doc.data();
-        final List<dynamic>? wifiFingerprintList = data['wifi_fingerprint'] as List<dynamic>?;
-        
-        if (wifiFingerprintList == null || wifiFingerprintList.isEmpty) continue;
+      // 2. Find Closest Exhibit using the centralized service
+      final result = await _locationService.findClosestExhibit();
 
-        final Map<String, int> storedRssiMap = {
-          for (var item in wifiFingerprintList)
-            if (item is Map<String, dynamic> && item['bssid'] is String && item['rssi'] is num)
-              item['bssid'] as String: (item['rssi'] as num).toInt()
-        };
-
-        if (storedRssiMap.isEmpty) continue;
-
-        final distanceSquared = _calculateEuclideanDistance(liveRssiMap, storedRssiMap);
-
-        matchResults.add({
-          'doc': doc,
-          'distance': distanceSquared,
-          'data': data,
-        });
-      }
-
-      if (matchResults.isEmpty) {
+      if (result == null) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not match any exhibit fingerprints.')),
+          const SnackBar(content: Text('No confident exhibit match found nearby.')),
         );
-        setState(() => _isDetecting = false);
         return;
       }
-
-      // Find Best Match (Nearest Neighbor)
-      matchResults.sort((a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
-
-      final bestMatch = matchResults.first;
-      final bestData = bestMatch['data'] as Map<String, dynamic>;
-      final confidenceDistance = bestMatch['distance'] as double;
       
-      final name = (bestData['name'] ?? '').toString();
-      final description = (bestData['description'] ?? '').toString();
-      final maybeAudio = (bestData['audioUrl'] as String?);
-      
-      // Update UI and speak description
+      // 3. Update UI and trigger audio
       if (!mounted) return;
       setState(() {
-        exhibitName = name.isEmpty ? 'Exhibit' : name;
-        exhibitDescription = description.isEmpty ? 'No description available.' : description;
-        audioUrl = (maybeAudio != null && maybeAudio.isNotEmpty) ? maybeAudio : null;
-        _bestDistance = confidenceDistance; 
+        exhibitName = result.name;
+        exhibitDescription = result.description;
+        audioUrl = result.audioUrl;
+        _bestDistance = result.confidenceDistance; 
         
         _audioPlayer.stop();
         _isPlaying = false;
         _position = Duration.zero;
         _playerState = AudioPlayerState.stopped;
-        _isDetecting = false;
       });
 
-      if (description.isNotEmpty) {
+      if (result.description.isNotEmpty) {
         await _tts.stop();
-        await _tts.speak(description);
+        await _tts.speak(result.description);
       }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Exhibit: $exhibitName found! Confidence: ${confidenceDistance.toStringAsFixed(0)}')),
+        SnackBar(content: Text('Exhibit: ${result.name} loaded!')),
       );
     } catch (e) {
       if (!mounted) return;
-      setState(() => _isDetecting = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Detection failed: ${e.toString()}')),
       );
+    } finally {
+        if (mounted) setState(() => _isDetecting = false);
     }
   }
 
@@ -283,7 +165,6 @@ class _ExhibitPageState extends State<ExhibitPage> {
     return Container(
       margin: const EdgeInsets.only(top: 20),
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-      // Theme Change: Dark Background
       decoration: BoxDecoration(
         color: Colors.grey[900], 
         borderRadius: BorderRadius.circular(12),
@@ -299,8 +180,8 @@ class _ExhibitPageState extends State<ExhibitPage> {
         children: [
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              thumbColor: Colors.amber, // Theme Color
-              activeTrackColor: Colors.amber, // Theme Color
+              thumbColor: Colors.amber,
+              activeTrackColor: Colors.amber,
               inactiveTrackColor: Colors.grey[700],
               overlayColor: Colors.amber.withOpacity(0.2),
             ),
@@ -325,7 +206,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
                   icon: Icon(
                     _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
                     size: 48,
-                    color: Colors.amber, // Theme Color
+                    color: Colors.amber,
                   ),
                   onPressed: _playPauseAudio,
                 ),
@@ -382,11 +263,11 @@ class _ExhibitPageState extends State<ExhibitPage> {
     );
   }
   
-  // New widget for the scanning status indicator
+  // Widget for the scanning status indicator
   Widget _buildScanStatus() {
     final statusText = _isDetecting ? 'Scanning for Fingerprint...' : 'Detection Ready';
     final statusIcon = _isDetecting ? Icons.wifi_find : Icons.location_on;
-    final statusColor = _isDetecting ? Colors.amber[700]! : Colors.green; // Amber for detecting
+    final statusColor = _isDetecting ? Colors.amber[700]! : Colors.green;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -416,7 +297,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black, // Theme Change: Black Background
+      backgroundColor: Colors.black, // High contrast background
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.white),
@@ -431,7 +312,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
           ),
         ),
         centerTitle: true,
-        backgroundColor: Colors.black, // Theme Change: Black AppBar
+        backgroundColor: Colors.black,
         elevation: 4,
       ),
       body: Padding(
@@ -451,7 +332,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
                     style: const TextStyle(
                       fontSize: 28,
                       fontWeight: FontWeight.w900,
-                      color: Colors.white, // Theme Change: White text
+                      color: Colors.white,
                     ),
                   ),
                 ),
@@ -466,7 +347,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
-                  color: Colors.amber[400], // Theme Change: Amber accent
+                  color: Colors.amber[400],
                 ),
               )
             else
@@ -475,7 +356,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
-                  color: Colors.grey[400], // Subdued white/grey
+                  color: Colors.grey[400],
                 ),
               ),
 
@@ -498,7 +379,6 @@ class _ExhibitPageState extends State<ExhibitPage> {
                       )
                     : const Icon(Icons.wifi_find, color: Colors.black),
                 label: Text(_isDetecting ? 'DETECTING...' : 'DETECT EXHIBIT'),
-                // Theme Change: Amber button with black text/icon
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.amber, 
                   foregroundColor: Colors.black,
