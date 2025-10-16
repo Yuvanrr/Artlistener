@@ -31,8 +31,8 @@ class _ExhibitPageState extends State<ExhibitPage> {
   final FlutterTts _tts = FlutterTts();
   bool _isSpeaking = false;
 
-  // Target SSID
-  static const String targetSsid = 'PSG';
+  // No longer need allowed SSIDs list - we'll use any SSID from database
+  bool _isLoadingNetworks = false;
 
   @override
   void initState() {
@@ -129,83 +129,105 @@ class _ExhibitPageState extends State<ExhibitPage> {
     }
   }
 
-  // Button action: detect PSG Wi‑Fi, compare RSSI against DB, speak description
+  // Button action: detect any Wi‑Fi network that has exhibits in the database
   Future<void> _getNewExhibitDescription() async {
+    setState(() => _isLoadingNetworks = true);
+
     try {
-      // 1) Scan Wi‑Fi and pick the strongest AP for the target SSID
+      // 1) Scan Wi‑Fi and get all available networks
       final can = await wifi_scan.WiFiScan.instance.canStartScan();
+      print('Can start Wi-Fi scan: $can');
+
       if (can != wifi_scan.CanStartScan.yes) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Location permission/services required for Wi‑Fi scan')),
+          SnackBar(
+            content: Text('Location permission/services required for Wi‑Fi scan. Status: $can'),
+            duration: const Duration(seconds: 4),
+          ),
         );
         return;
       }
 
       // Start scan and get fresh results
-      await wifi_scan.WiFiScan.instance.getScannedResults(); // get existing if available
+      await wifi_scan.WiFiScan.instance.getScannedResults();
       final results = await wifi_scan.WiFiScan.instance.getScannedResults();
-      final psgAps = results.where((ap) => ap.ssid == targetSsid).toList();
 
-      if (psgAps.isEmpty) {
+      // Debug: Print all detected networks
+      print('All detected Wi-Fi networks:');
+      for (var ap in results) {
+        print('  SSID: "${ap.ssid}", BSSID: ${ap.bssid}, Level: ${ap.level}');
+      }
+
+      if (results.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PSG network not found nearby')),
+          const SnackBar(content: Text('No Wi‑Fi networks found nearby')),
         );
         return;
       }
 
-      // Choose the AP with the best signal (highest RSSI)
-      psgAps.sort((a, b) => b.level.compareTo(a.level));
-      final liveAp = psgAps.first;
-      final liveRssi = liveAp.level;
-
-      // 2) Query Firestore for documents with wifi.ssid == 'PSG'
-      final qs = await FirebaseFirestore.instance
-          .collection('c_guru')
-          .where('wifi.ssid', isEqualTo: targetSsid)
-          .get();
-
-      if (qs.docs.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No exhibits for PSG in database')),
-        );
-        return;
-      }
-
-      // 3) Pick the best match by closest RSSI difference
+      // 2) For each detected network, check if there are exhibits using that SSID
+      wifi_scan.WiFiAccessPoint? bestAp;
       QueryDocumentSnapshot<Map<String, dynamic>>? bestDoc;
-      int bestDiff = 1 << 30;
 
-      for (final doc in qs.docs) {
-        final data = doc.data();
-        final wifi = data['wifi'] as Map<String, dynamic>?;
+      for (final ap in results) {
+        if (ap.ssid.isEmpty) continue; // Skip hidden networks
 
-        final storedRssi = (wifi?['rssi'] is num) ? (wifi?['rssi'] as num).toInt() : null;
-        if (storedRssi == null) continue;
+        print('Checking SSID: ${ap.ssid}');
 
-        final diff = (storedRssi - liveRssi).abs();
-        if (diff < bestDiff) {
-          bestDiff = diff;
-          bestDoc = doc;
+        // Query database for exhibits with this SSID
+        final querySnapshot = await FirebaseFirestore.instance
+            .collection('c_guru')
+            .where('wifi.ssid', isEqualTo: ap.ssid)
+            .get();
+
+        print('Found ${querySnapshot.docs.length} exhibits for SSID: ${ap.ssid}');
+
+        if (querySnapshot.docs.isNotEmpty) {
+          // Found exhibits for this SSID - use the strongest signal
+          bestAp = ap;
+          // Get the exhibit with closest RSSI match
+          int bestDiff = 1 << 30;
+
+          for (final doc in querySnapshot.docs) {
+            final data = doc.data();
+            final wifi = data['wifi'] as Map<String, dynamic>?;
+            final storedRssi = (wifi?['rssi'] is num) ? (wifi?['rssi'] as num).toInt() : null;
+
+            if (storedRssi != null) {
+              final diff = (storedRssi - ap.level).abs();
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                bestDoc = doc;
+              }
+            }
+          }
+
+          if (bestDoc != null) {
+            print('Best match found for SSID: ${ap.ssid}');
+            break; // Found a match, no need to check other networks
+          }
         }
       }
 
-      if (bestDoc == null) {
+      if (bestAp == null || bestDoc == null) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No matching exhibit by signal strength')),
+          SnackBar(
+            content: Text('No exhibits found for any detected networks. Found ${results.length} networks'),
+            duration: const Duration(seconds: 4),
+          ),
         );
         return;
       }
 
+      // 3) Update UI with found exhibit
       final bestData = bestDoc!.data();
       final name = (bestData['name'] ?? '').toString();
       final description = (bestData['description'] ?? '').toString();
       final maybeAudio = (bestData['audioUrl'] as String?);
 
-      // 4) Update UI and speak description
       if (!mounted) return;
       setState(() {
         exhibitName = name.isEmpty ? 'Exhibit' : name;
@@ -221,20 +243,33 @@ class _ExhibitPageState extends State<ExhibitPage> {
         _playerState = AudioPlayerState.stopped;
       });
 
-      // Read aloud via TTS
-      if (description.isNotEmpty) {
-        await _tts.stop();
-        await _tts.speak(description);
-      }
-
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Loaded exhibit from Wi‑Fi fingerprint')),
+        SnackBar(content: Text('Exhibit loaded! Detected network: ${bestAp.ssid}. Tap the play button to hear the description.')),
       );
+
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to load exhibit: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingNetworks = false);
+      }
+    }
+  }
+
+  Future<void> _playDescriptionTTS() async {
+    if (exhibitDescription == null || exhibitDescription!.isEmpty) return;
+
+    try {
+      await _tts.stop();
+      await _tts.speak(exhibitDescription!);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error playing description: $e')),
       );
     }
   }
@@ -271,6 +306,20 @@ class _ExhibitPageState extends State<ExhibitPage> {
         centerTitle: true,
         backgroundColor: Colors.black,
         elevation: 0,
+        actions: [
+          if (_isLoadingNetworks)
+            Container(
+              margin: const EdgeInsets.only(right: 16),
+              child: const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 2,
+                ),
+              ),
+            ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -329,7 +378,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
               const SizedBox(height: 20),
             ],
 
-            // Exhibit Description
+            // Exhibit Description with play button
             Expanded(
               child: Container(
                 width: double.infinity,
@@ -338,15 +387,51 @@ class _ExhibitPageState extends State<ExhibitPage> {
                   border: Border.all(color: Colors.grey.shade300),
                   borderRadius: BorderRadius.circular(8.0),
                 ),
-                child: SingleChildScrollView(
-                  child: Text(
-                    exhibitDescription ??
-                        'Exhibit description has not been retrieved or is unable to retrieve due to server issues.',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      color: Colors.black87,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Play button for description
+                    Row(
+                      children: [
+                        IconButton(
+                          icon: Icon(
+                            _isSpeaking ? Icons.stop_circle : Icons.play_circle_filled,
+                            size: 32,
+                            color: Colors.black,
+                          ),
+                          onPressed: _isSpeaking
+                              ? () async {
+                                  await _tts.stop();
+                                  setState(() => _isSpeaking = false);
+                                }
+                              : _playDescriptionTTS,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _isSpeaking ? 'Stop Description' : 'Play Description',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
+                    const Divider(height: 16),
+                    // Description text
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: Text(
+                          exhibitDescription ??
+                              'Exhibit description has not been retrieved or is unable to retrieve due to server issues.',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -356,7 +441,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _getNewExhibitDescription,
+                onPressed: _isLoadingNetworks ? null : _getNewExhibitDescription,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 16.0),
@@ -364,14 +449,23 @@ class _ExhibitPageState extends State<ExhibitPage> {
                     borderRadius: BorderRadius.circular(8.0),
                   ),
                 ),
-                child: const Text(
-                  'Get Exhibit (via Wi‑Fi)',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                child: _isLoadingNetworks
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : const Text(
+                        'Get Exhibit (via Wi‑Fi)',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
               ),
             ),
           ],
