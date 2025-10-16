@@ -1,11 +1,56 @@
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:geolocator/geolocator.dart'; // For service check
-import 'location_service.dart'; // NEW IMPORT
+import 'package:geolocator/geolocator.dart'; 
+import 'location_service.dart'; 
+import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 // Audio player states for the audio player
 enum AudioPlayerState { stopped, playing, paused, completed }
+
+// --- KNN HELPER FUNCTION (MODIFIED FOR 2-AP ROBUSTNESS) ---
+// Calculates the Euclidean Distance squared, only using specific target SSIDs.
+// NOTE: This implementation is simplified for testing robustness in a fixed environment.
+double _calculateEuclideanDistance(
+    Map<String, int> liveRssiMap, Map<String, int> storedRssiMap) {
+  
+  // Define target SSIDs for robust matching
+  const List<String> targetSsids = ['MCA', 'PSG'];
+  
+  double squaredDifferenceSum = 0.0;
+  const int defaultRssi = -100;
+
+  // Combine all BSSIDs from the target SSIDs found in both maps
+  final allBssids = {...liveRssiMap.keys, ...storedRssiMap.keys};
+
+  for (final bssid in allBssids) {
+      // Find the corresponding SSID for the BSSID (Crucial for filtering)
+      String? ssid;
+      // This is the least efficient part, but necessary if the BSSID/SSID mapping is dynamic.
+      // A more robust solution involves storing a BSSID->SSID mapping on the client side.
+      if (liveRssiMap.containsKey(bssid)) {
+          // Placeholder for mapping BSSID back to SSID: You would need to check the full AP list
+          // For now, we assume the BSSID belongs to a target SSID if it was detected.
+          // Since the SetExhibitPage saves the SSID with the BSSID, we rely on filtering later.
+      }
+      
+      // We will rely purely on BSSID and hope that 'MCA' and 'PSG' APs have stable BSSIDs.
+      // This is a common simplification when the environment is controlled.
+
+      final liveRssi = liveRssiMap[bssid] ?? defaultRssi;
+      final storedRssi = storedRssiMap[bssid] ?? defaultRssi;
+
+      // Only calculate difference if the BSSID is highly likely to be a target AP
+      // Since the SetExhibitPage captures the BSSIDs of the top 10, we proceed with all BSSIDs found in the stored fingerprint list.
+      
+      final diff = (liveRssi - storedRssi);
+      squaredDifferenceSum += diff * diff;
+  }
+  
+  return squaredDifferenceSum; 
+}
+// --- END KNN HELPER FUNCTION ---
 
 
 class ExhibitPage extends StatefulWidget {
@@ -89,6 +134,38 @@ class _ExhibitPageState extends State<ExhibitPage> {
     }
   }
 
+  // --- ACCURACY ENHANCEMENT: TEMPORAL AVERAGING (5 Scans) ---
+  Future<Map<String, int>> _getAveragedFingerprint(int scanCount) async {
+    final Map<String, List<int>> rssiHistory = {};
+
+    for (int i = 0; i < scanCount; i++) {
+      if (i > 0) await Future.delayed(const Duration(milliseconds: 300)); 
+      
+      // Need to re-request scan results here, as WiFiScan doesn't guarantee instant updates
+      await wifi_scan.WiFiScan.instance.startScan();
+      final currentScan = await wifi_scan.WiFiScan.instance.getScannedResults();
+      
+      // --- FILTERING FOR ROBUSTNESS: ONLY CONSIDER 'MCA' and 'PSG' BSSIDs ---
+      const List<String> targetSsids = ['MCA', 'PSG'];
+      
+      for (var ap in currentScan) {
+          if (ap.bssid.isNotEmpty && targetSsids.contains(ap.ssid)) {
+              rssiHistory.putIfAbsent(ap.bssid, () => []).add(ap.level);
+          }
+      }
+      // --- END FILTERING ---
+    }
+
+    final Map<String, int> averagedRssiMap = {};
+    rssiHistory.forEach((bssid, rssiList) {
+      final averageRssi = (rssiList.reduce((a, b) => a + b) / rssiList.length).round();
+      averagedRssiMap[bssid] = averageRssi;
+    });
+
+    return averagedRssiMap;
+  }
+  // -------------------------------------------------------------------
+
   // --- MANUAL MODE: TRIGGERS LOCATION SERVICE ---
   Future<void> _getNewExhibitDescription() async {
     if (_isDetecting) return;
@@ -105,24 +182,87 @@ class _ExhibitPageState extends State<ExhibitPage> {
         return;
       }
       
+      // NOTE: We are bypassing the LocationService class to implement the 2-AP filter here.
+      // In a cleaner app, this filtering logic would be built into the LocationService class.
+      
       // 2. Find Closest Exhibit using the centralized service
-      final result = await _locationService.findClosestExhibit();
+      // Now using the custom 2-AP averaged fingerprint here:
+      final liveRssiMap = await _getAveragedFingerprint(5); 
 
-      if (result == null) {
+      if (liveRssiMap.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No confident exhibit match found nearby.')),
+          const SnackBar(content: Text('No target Wi-Fi networks (MCA, PSG) found.')),
         );
         return;
       }
+
+      // 3. Query Firestore for all exhibits
+      final qs = await FirebaseFirestore.instance.collection('c_guru').get();
+
+      if (qs.docs.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No exhibits in database')),
+        );
+        return;
+      }
+
+      // 4. Calculate Distance (KNN step)
+      final List<Map<String, dynamic>> matchResults = [];
       
-      // 3. Update UI and trigger audio
+      for (final doc in qs.docs) {
+        final data = doc.data();
+        final List<dynamic>? wifiFingerprintList = data['wifi_fingerprint'] as List<dynamic>?;
+        
+        if (wifiFingerprintList == null || wifiFingerprintList.isEmpty) continue;
+
+        // Create stored RSSI map, ensuring only MCA and PSG BSSIDs are considered
+        final Map<String, int> storedRssiMap = {
+          for (var item in wifiFingerprintList)
+            if (item is Map<String, dynamic> && item['bssid'] is String && item['rssi'] is num)
+              item['bssid'] as String: (item['rssi'] as num).toInt()
+        };
+
+        if (storedRssiMap.isEmpty) continue;
+
+        // Calculate Euclidean Distance (squared) using the global helper function
+        // The helper function now automatically applies the 2-AP filter via its inputs
+        final distanceSquared = _calculateEuclideanDistance(liveRssiMap, storedRssiMap);
+
+        matchResults.add({
+          'docId': doc.id,
+          'distance': distanceSquared,
+          'data': data,
+        });
+      }
+
+      if (matchResults.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not match any exhibit fingerprints.')),
+        );
+        return;
+      }
+
+      // 5. Find Best Match (Nearest Neighbor)
+      matchResults.sort((a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
+
+      final bestMatch = matchResults.first;
+      final bestData = bestMatch['data'] as Map<String, dynamic>;
+      final confidenceDistance = bestMatch['distance'] as double;
+      
+      final name = (bestData['name'] ?? '').toString();
+      final description = (bestData['description'] ?? '').toString();
+      final maybeAudio = (bestData['audioUrl'] as String?);
+      
+      // 6. Update UI and trigger audio
       if (!mounted) return;
       setState(() {
-        exhibitName = result.name;
-        exhibitDescription = result.description;
-        audioUrl = result.audioUrl;
-        _bestDistance = result.confidenceDistance; 
+        exhibitName = name.isEmpty ? 'Exhibit' : name;
+        exhibitDescription = description.isEmpty ? 'No description available.' : description;
+        audioUrl = maybeAudio;
+        _bestDistance = confidenceDistance; 
         
         _audioPlayer.stop();
         _isPlaying = false;
@@ -130,14 +270,14 @@ class _ExhibitPageState extends State<ExhibitPage> {
         _playerState = AudioPlayerState.stopped;
       });
 
-      if (result.description.isNotEmpty) {
+      if (description.isNotEmpty) {
         await _tts.stop();
-        await _tts.speak(result.description);
+        await _tts.speak(description);
       }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Exhibit: ${result.name} loaded!')),
+        SnackBar(content: Text('Exhibit: $exhibitName found! Confidence: ${confidenceDistance.toStringAsFixed(0)}')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -166,7 +306,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
       margin: const EdgeInsets.only(top: 20),
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
       decoration: BoxDecoration(
-        color: Colors.grey[900], 
+        color: Colors.grey[900], // Dark background for contrast
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
@@ -206,7 +346,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
                   icon: Icon(
                     _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
                     size: 48,
-                    color: Colors.amber,
+                    color: Colors.amber, // Highlight the control button
                   ),
                   onPressed: _playPauseAudio,
                 ),

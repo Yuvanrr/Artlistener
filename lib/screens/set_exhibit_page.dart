@@ -1,3 +1,4 @@
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -30,6 +31,9 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
   final List<XFile> _pickedImages = [];
   final Map<String, double> _uploadProgress = {}; // filePath -> 0..1
 
+  // Define the critical SSIDs for fingerprinting consistency
+  static const List<String> _targetSsids = ['MCA', 'PSG'];
+
   @override
   void initState() {
     super.initState();
@@ -43,7 +47,7 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     super.dispose();
   }
 
-  // Helper functions
+  // Helper functions (Unchanged)
   String? _enumToLabel(dynamic value) {
     if (value == null) return null;
     final s = value.toString();
@@ -65,7 +69,7 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     }
   }
 
-  // --- Wi-Fi Scan Logic (Unchanged) ---
+  // --- Wi-Fi Scan Logic ---
   Future<void> _scanWifiNetworks() async {
     setState(() => _isLoading = true);
     final can = await wifi_scan.WiFiScan.instance.canStartScan();
@@ -221,14 +225,14 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     return urls;
   }
 
-  // --- Submission Logic (Unchanged functionality, simplified display data) ---
+  // --- Submission Logic (Updated for 2-AP KNN consistency) ---
   Future<void> _onSetExhibit() async {
     if (!_formKey.currentState!.validate()) return;
     
     // 1. Create the KNN-compatible Wi-Fi Fingerprint Vector
+    // Filter the scan results to include ONLY the target SSIDs ('MCA', 'PSG')
     final List<Map<String, dynamic>> wifiFingerprint = _wifiNetworks
-        .take(10) 
-        .where((ap) => ap.bssid != null && ap.ssid != null)
+        .where((ap) => _targetSsids.contains(ap.ssid) && ap.bssid != null) 
         .map((ap) => {
               'bssid': ap.bssid,
               'ssid': ap.ssid,
@@ -237,10 +241,11 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
             })
         .toList();
     
+    // IMPORTANT CHECK: Ensure we found at least one of the target APs
     if (wifiFingerprint.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text('No valid Wi‑Fi fingerprints could be created. Rescan.'),
+                content: Text('Target Wi‑Fi networks (MCA, PSG) not found. Move closer or rescan.'),
                 backgroundColor: Colors.red,
             ),
         );
@@ -281,7 +286,7 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
       final newExhibit = {
         'name': _exhibitNameController.text.trim(),
         'description': _exhibitDescController.text.trim(),
-        'wifi_fingerprint': wifiFingerprint, // THE KNN VECTOR FOR MATCHING
+        'wifi_fingerprint': wifiFingerprint, // THE FILTERED KNN VECTOR
         'selected_ap_info': selectedApInfo,  // Auxiliary info (optional)
         'photos': photoUrls, 
         'timestamp': FieldValue.serverTimestamp(),

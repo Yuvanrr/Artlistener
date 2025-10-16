@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'location_service.dart'; // NEW IMPORT
+import 'location_service.dart'; // Assumed to contain ExhibitMatchResult and LocationService class
 import 'dart:async';
 
 class AutoNarrationPage extends StatefulWidget {
@@ -23,7 +23,7 @@ class _AutoNarrationPageState extends State<AutoNarrationPage> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   Timer? _detectionTimer;
   
-  // Tracking History
+  // Tracking History: Stores the ID of the last successfully played exhibit
   String _lastPlayedExhibitId = "";
 
   @override
@@ -58,7 +58,10 @@ class _AutoNarrationPageState extends State<AutoNarrationPage> {
       });
 
       try {
+        // --- ACCURACY ENHANCEMENT: Uses the service to find the exhibit ---
+        // NOTE: The LocationService must contain the logic to filter for 'MCA' and 'PSG'
         final result = await _locationService.findClosestExhibit();
+        // -----------------------------------------------------------------
         
         if (!mounted) return;
         
@@ -251,11 +254,11 @@ class _AutoNarrationPageState extends State<AutoNarrationPage> {
                     ),
                   ),
                   if (_currentExhibitConfidence != null)
-                     Padding(
+                      Padding(
                        padding: const EdgeInsets.only(top: 4.0),
                        child: Text(
                           'Confidence: ${_currentExhibitConfidence!.toStringAsFixed(0)}',
-                          style: TextStyle(
+                          style: const TextStyle(
                             color: Colors.white54,
                             fontSize: 14,
                           ),

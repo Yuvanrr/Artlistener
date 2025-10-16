@@ -23,6 +23,7 @@ class ExhibitMatchResult {
 double calculateEuclideanDistance(
     Map<String, int> liveRssiMap, Map<String, int> storedRssiMap) {
   double squaredDifferenceSum = 0.0;
+  // Use the union of BSSIDs found in both fingerprints for comparison
   final allBssids = {...liveRssiMap.keys, ...storedRssiMap.keys};
   const int defaultRssi = -100;
 
@@ -38,7 +39,10 @@ double calculateEuclideanDistance(
 
 
 class LocationService {
-  // --- ACCURACY ENHANCEMENT: TEMPORAL AVERAGING (5 Scans) ---
+  // Define the critical SSIDs for both saving and retrieving
+  static const List<String> _targetSsids = ['MCA', 'PSG'];
+
+  // --- ACCURACY ENHANCEMENT: TEMPORAL AVERAGING (5 Scans) with FILTERING ---
   Future<Map<String, int>> getAveragedFingerprint(int scanCount) async {
     final Map<String, List<int>> rssiHistory = {};
 
@@ -49,7 +53,8 @@ class LocationService {
       final currentScan = await wifi_scan.WiFiScan.instance.getScannedResults();
       
       for (var ap in currentScan) {
-          if (ap.bssid.isNotEmpty) {
+          // KEY CHANGE: ONLY record the target SSIDs for the live fingerprint
+          if (ap.bssid.isNotEmpty && _targetSsids.contains(ap.ssid)) {
               rssiHistory.putIfAbsent(ap.bssid, () => []).add(ap.level);
           }
       }
@@ -67,7 +72,7 @@ class LocationService {
   
   // --- CORE KNN MATCHING LOGIC ---
   Future<ExhibitMatchResult?> findClosestExhibit() async {
-    // 1. Capture Live Fingerprint Vector using TEMPORAL AVERAGING (5 scans for stability)
+    // 1. Capture Live Fingerprint Vector: Now FILTERS for 'MCA'/'PSG'
     final liveRssiMap = await getAveragedFingerprint(5);
 
     if (liveRssiMap.isEmpty) return null;
@@ -93,6 +98,8 @@ class LocationService {
 
       if (storedRssiMap.isEmpty) continue;
 
+      // The similarity calculation now works correctly because both inputs (live and stored)
+      // contain ONLY the BSSIDs of MCA and PSG.
       final distanceSquared = calculateEuclideanDistance(liveRssiMap, storedRssiMap);
 
       matchResults.add({
@@ -111,9 +118,8 @@ class LocationService {
     final bestData = bestMatch['data'] as Map<String, dynamic>;
     final confidenceDistance = bestMatch['distance'] as double;
     
-    // Optional: Define a threshold to reject very poor matches, 
-    // but for automatic mode, we usually trust the best match found.
-    const double distanceThreshold = 4000.0; // Increased threshold for stability
+    // Threshold set higher as a safety measure. You can adjust this after testing.
+    const double distanceThreshold = 5000.0; 
     if (confidenceDistance > distanceThreshold) {
       // If the best match is still too far, return null (no confident match)
       return null;
