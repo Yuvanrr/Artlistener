@@ -150,7 +150,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
       if (psgAps.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PSG network not found nearby')),
+          const SnackBar(content: Text('WIFI network not found nearby')),
         );
         return;
       }
