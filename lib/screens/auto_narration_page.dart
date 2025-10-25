@@ -46,25 +46,20 @@ class _AutoNarrationPageState extends State<AutoNarrationPage> {
     _detectionTimer?.cancel();
     _tts.stop();
     _audioPlayer.stop();
-
     _detectionTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
       if (!_isAutoNarrationActive) {
         timer.cancel();
         return;
       }
-      
       setState(() {
         _currentStatus = "Scanning Wi-Fi signal...";
       });
 
       try {
-        // --- ACCURACY ENHANCEMENT: Uses the service to find the exhibit ---
-        // NOTE: The LocationService must contain the logic to filter for 'MCA' and 'PSG'
+      
         final result = await _locationService.findClosestExhibit();
-        // -----------------------------------------------------------------
         
         if (!mounted) return;
-        
         if (result == null) {
           setState(() {
             _currentStatus = "No confident match found. Searching...";
