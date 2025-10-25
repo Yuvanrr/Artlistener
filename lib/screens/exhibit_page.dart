@@ -1,54 +1,101 @@
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:geolocator/geolocator.dart'; 
-import 'location_service.dart'; 
+import 'package:geolocator/geolocator.dart';
+import 'location_service.dart';
 import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:math';
 
 // Audio player states for the audio player
 enum AudioPlayerState { stopped, playing, paused, completed }
 
-// --- KNN HELPER FUNCTION (MODIFIED FOR 2-AP ROBUSTNESS) ---
+// --- KNN HELPER FUNCTION (MODIFIED FOR 3-AP ROBUSTNESS) ---
 // Calculates the Euclidean Distance squared, only using specific target SSIDs.
 // NOTE: This implementation is simplified for testing robustness in a fixed environment.
-double _calculateEuclideanDistance(
-    Map<String, int> liveRssiMap, Map<String, int> storedRssiMap) {
-  
-  // Define target SSIDs for robust matching
-  const List<String> targetSsids = ['MCA', 'PSG'];
-  
+double _calculateImprovedDistance(
+    Map<String, int> liveRssiMap,
+    Map<String, int> storedRssiMap,
+    {Map<String, double>? liveStabilityScores,
+    Map<String, double>? storedStabilityScores}) {
+
+  const List<String> targetSsids = ['YuvanRR', 'realme 13 Pro 5G', 'Praveen\'s A16'];
+
   double squaredDifferenceSum = 0.0;
   const int defaultRssi = -100;
+  int matchedNetworks = 0;
+  double totalWeight = 0.0;
+  Map<String, double> networkWeights = {};
 
-  // Combine all BSSIDs from the target SSIDs found in both maps
+  // Combine all BSSIDs from both maps
   final allBssids = {...liveRssiMap.keys, ...storedRssiMap.keys};
 
   for (final bssid in allBssids) {
-      // Find the corresponding SSID for the BSSID (Crucial for filtering)
-      String? ssid;
-      // This is the least efficient part, but necessary if the BSSID/SSID mapping is dynamic.
-      // A more robust solution involves storing a BSSID->SSID mapping on the client side.
-      if (liveRssiMap.containsKey(bssid)) {
-          // Placeholder for mapping BSSID back to SSID: You would need to check the full AP list
-          // For now, we assume the BSSID belongs to a target SSID if it was detected.
-          // Since the SetExhibitPage saves the SSID with the BSSID, we rely on filtering later.
-      }
-      
-      // We will rely purely on BSSID and hope that 'MCA' and 'PSG' APs have stable BSSIDs.
-      // This is a common simplification when the environment is controlled.
+    final liveRssi = liveRssiMap[bssid] ?? defaultRssi;
+    final storedRssi = storedRssiMap[bssid] ?? defaultRssi;
 
-      final liveRssi = liveRssiMap[bssid] ?? defaultRssi;
-      final storedRssi = storedRssiMap[bssid] ?? defaultRssi;
-
-      // Only calculate difference if the BSSID is highly likely to be a target AP
-      // Since the SetExhibitPage captures the BSSIDs of the top 10, we proceed with all BSSIDs found in the stored fingerprint list.
-      
+    // Only calculate if this BSSID was in the stored fingerprint
+    if (storedRssiMap.containsKey(bssid)) {
       final diff = (liveRssi - storedRssi);
       squaredDifferenceSum += diff * diff;
+      matchedNetworks++;
+
+      // Enhanced weighting system
+      double weight = 1.0;
+
+      // 1. Weight by signal strength (stronger = more reliable)
+      if (storedRssi > -50) weight *= 2.0;
+      else if (storedRssi > -70) weight *= 1.5;
+
+      // 2. Weight by network type (target networks get higher priority)
+      if (targetSsids.any((target) => bssid.toLowerCase().contains(target.toLowerCase().split(' ').first))) {
+        weight *= 1.3;
+      }
+
+      // 3. Weight by stability (more stable signals are more reliable)
+      final storedStability = storedStabilityScores?[bssid] ?? 5.0; // Default 5dB if unknown
+      final liveStability = liveStabilityScores?[bssid] ?? 5.0;
+
+      // Lower stability (lower variance) gets higher weight
+      weight *= (1.0 / (1.0 + storedStability * 0.1)); // Scale stability to 0.5-1.0 range
+      weight *= (1.0 / (1.0 + liveStability * 0.1));
+
+      // 4. Weight by frequency band (5GHz is more stable)
+      if (bssid.contains('5G') || bssid.contains('5GHz')) {
+        weight *= 1.2;
+      }
+
+      // 5. Weight by uniqueness (penalize common networks)
+      if (['AndroidAP', 'iPhone', 'Redmi', 'Guest'].any((common) =>
+          bssid.toLowerCase().contains(common.toLowerCase()))) {
+        weight *= 0.8;
+      }
+
+      squaredDifferenceSum *= weight;
+      totalWeight += weight;
+      networkWeights[bssid] = weight;
+    }
   }
-  
-  return squaredDifferenceSum; 
+
+  // Normalize by total weight
+  if (totalWeight > 0) {
+    squaredDifferenceSum = squaredDifferenceSum / totalWeight;
+  }
+
+  // Enhanced penalty system
+  double matchQuality = matchedNetworks / max(1, allBssids.length);
+
+  if (matchedNetworks < 2) {
+    squaredDifferenceSum *= 4.0;
+  } else if (matchedNetworks < 3) {
+    squaredDifferenceSum *= 2.0;
+  } else if (matchQuality < 0.5) {
+    squaredDifferenceSum *= 1.5;
+  }
+
+  print('📊 Enhanced Match: $matchedNetworks networks, quality ${(matchQuality * 100).toStringAsFixed(1)}%, weights: ${networkWeights.toString()}');
+
+  return squaredDifferenceSum;
 }
 // --- END KNN HELPER FUNCTION ---
 
@@ -65,7 +112,6 @@ class _ExhibitPageState extends State<ExhibitPage> {
   String? exhibitName;
   String? exhibitDescription;
   String? audioUrl;
-  double? _bestDistance; // To show the confidence score
   bool _isDetecting = false; // State for scanning animation
 
   final LocationService _locationService = LocationService(); // INSTANCE OF NEW SERVICE
@@ -87,14 +133,17 @@ class _ExhibitPageState extends State<ExhibitPage> {
     exhibitDescription = 'Tap the button to detect location and play the description.';
 
     // Audio player listeners (Simplified for brevity)
-    _audioPlayer.onPlayerStateChanged.listen((state) => setState(() => _isPlaying = state == PlayerState.playing));
+    _audioPlayer.onPlayerStateChanged.listen((state) {
+      setState(() {
+        _isPlaying = state == PlayerState.playing;
+        if (state == PlayerState.completed) {
+          _position = Duration.zero;
+          _playerState = AudioPlayerState.completed;
+        }
+      });
+    });
     _audioPlayer.onDurationChanged.listen((d) => setState(() => _duration = d));
     _audioPlayer.onPositionChanged.listen((p) => setState(() => _position = p));
-    _audioPlayer.onPlayerComplete.listen((event) => setState(() {
-      _isPlaying = false;
-      _position = Duration.zero;
-      _playerState = AudioPlayerState.completed;
-    }));
 
     // TTS Setup
     _tts.setLanguage('en-US');
@@ -114,8 +163,24 @@ class _ExhibitPageState extends State<ExhibitPage> {
     super.dispose();
   }
 
+  Future<void> _playPauseTTS() async {
+    if (exhibitDescription == null || exhibitDescription!.isEmpty) return;
+
+    try {
+      if (_isSpeaking) {
+        await _tts.pause();
+      } else {
+        await _tts.speak(exhibitDescription!);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error with text-to-speech: $e')),
+      );
+    }
+  }
+
   Future<void> _playPauseAudio() async {
-    // ... (Audio player logic remains the same)
     try {
       if (_isPlaying) {
         await _audioPlayer.pause();
@@ -134,37 +199,67 @@ class _ExhibitPageState extends State<ExhibitPage> {
     }
   }
 
-  // --- ACCURACY ENHANCEMENT: TEMPORAL AVERAGING (5 Scans) ---
-  Future<Map<String, int>> _getAveragedFingerprint(int scanCount) async {
+  // --- TEMPORAL ANALYSIS: Track signal stability over time ---
+  Future<Map<String, dynamic>> _getEnhancedFingerprint(int scanCount) async {
     final Map<String, List<int>> rssiHistory = {};
+    final Map<String, List<int>> temporalData = {}; // Track RSSI over time
 
     for (int i = 0; i < scanCount; i++) {
-      if (i > 0) await Future.delayed(const Duration(milliseconds: 300)); 
-      
-      // Need to re-request scan results here, as WiFiScan doesn't guarantee instant updates
+      if (i > 0) await Future.delayed(const Duration(milliseconds: 300));
+
       await wifi_scan.WiFiScan.instance.startScan();
       final currentScan = await wifi_scan.WiFiScan.instance.getScannedResults();
-      
-      // --- FILTERING FOR ROBUSTNESS: ONLY CONSIDER 'MCA' and 'PSG' BSSIDs ---
-      const List<String> targetSsids = ['MCA', 'PSG'];
-      
+
+      const List<String> targetSsids = [
+        'YuvanRR', 'realme 13 Pro 5G', 'Praveen\'s A16',
+        'MCA', 'PSG', 'YuvanRR_5G', 'realme 13 Pro 5G_5GHz',
+        'AndroidAP', 'iPhone', 'Redmi', 'Guest', 'Office', 'Conference'
+      ];
+
+      const List<String> fallbackSsids = [
+        'Hidden Network', 'AndroidAP', 'iPhone', 'Redmi',
+        'Guest', 'Office', 'Conference', 'Meeting'
+      ];
+
       for (var ap in currentScan) {
-          if (ap.bssid.isNotEmpty && targetSsids.contains(ap.ssid)) {
-              rssiHistory.putIfAbsent(ap.bssid, () => []).add(ap.level);
-          }
+        final ssid = ap.ssid.trim();
+
+        if (targetSsids.any((target) => ssid.toLowerCase() == target.toLowerCase()) ||
+            fallbackSsids.any((fallback) => ssid.toLowerCase() == fallback.toLowerCase()) ||
+            targetSsids.any((target) => ssid.toLowerCase().contains(target.toLowerCase().split(' ').first))) {
+
+          rssiHistory.putIfAbsent(ap.bssid, () => []).add(ap.level);
+
+          // Track temporal stability (how much RSSI varies over time)
+          temporalData.putIfAbsent(ap.bssid, () => []).add(ap.level);
+        }
       }
-      // --- END FILTERING ---
     }
 
     final Map<String, int> averagedRssiMap = {};
+    final Map<String, double> stabilityScores = {}; // Lower variance = higher stability
+
     rssiHistory.forEach((bssid, rssiList) {
       final averageRssi = (rssiList.reduce((a, b) => a + b) / rssiList.length).round();
       averagedRssiMap[bssid] = averageRssi;
+
+      // Calculate stability (lower variance = more stable signal)
+      if (rssiList.length > 1) {
+        final mean = rssiList.reduce((a, b) => a + b) / rssiList.length;
+        final variance = rssiList.map((rssi) => pow(rssi - mean, 2)).reduce((a, b) => a + b) / rssiList.length;
+        stabilityScores[bssid] = sqrt(variance); // Standard deviation
+      } else {
+        stabilityScores[bssid] = 0.0; // Perfect stability if only one sample
+      }
     });
 
-    return averagedRssiMap;
+    return {
+      'rssiMap': averagedRssiMap,
+      'stabilityScores': stabilityScores,
+      'networkCount': averagedRssiMap.length,
+      'scanQuality': stabilityScores.values.isNotEmpty ? stabilityScores.values.reduce((a, b) => a + b) / stabilityScores.length : 0.0
+    };
   }
-  // -------------------------------------------------------------------
 
   // --- MANUAL MODE: TRIGGERS LOCATION SERVICE ---
   Future<void> _getNewExhibitDescription() async {
@@ -182,20 +277,33 @@ class _ExhibitPageState extends State<ExhibitPage> {
         return;
       }
       
-      // NOTE: We are bypassing the LocationService class to implement the 2-AP filter here.
+      // NOTE: We are bypassing the LocationService class to implement the 3-AP filter here.
       // In a cleaner app, this filtering logic would be built into the LocationService class.
       
-      // 2. Find Closest Exhibit using the centralized service
-      // Now using the custom 2-AP averaged fingerprint here:
-      final liveRssiMap = await _getAveragedFingerprint(5); 
+      // 2. Find Closest Exhibit using the enhanced fingerprint system
+      // Now using temporal analysis and stability tracking:
+      final enhancedFingerprint = await _getEnhancedFingerprint(5);
+      final liveRssiMap = enhancedFingerprint['rssiMap'] as Map<String, int>;
 
       if (liveRssiMap.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No target Wi-Fi networks (MCA, PSG) found.')),
+          const SnackBar(
+            content: Text('No Wi-Fi networks detected. Please check your Wi-Fi is enabled.'),
+            duration: Duration(seconds: 5),
+          ),
         );
         return;
       }
+
+      // Show enhanced scanning results
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Detecting nearby exhibits...'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
 
       // 3. Query Firestore for all exhibits
       final qs = await FirebaseFirestore.instance.collection('c_guru').get();
@@ -217,7 +325,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
         
         if (wifiFingerprintList == null || wifiFingerprintList.isEmpty) continue;
 
-        // Create stored RSSI map, ensuring only MCA and PSG BSSIDs are considered
+        // Create stored RSSI map, ensuring only YuvanRR, realme 13 Pro 5G, and Praveen's A16 BSSIDs are considered
         final Map<String, int> storedRssiMap = {
           for (var item in wifiFingerprintList)
             if (item is Map<String, dynamic> && item['bssid'] is String && item['rssi'] is num)
@@ -226,14 +334,20 @@ class _ExhibitPageState extends State<ExhibitPage> {
 
         if (storedRssiMap.isEmpty) continue;
 
-        // Calculate Euclidean Distance (squared) using the global helper function
-        // The helper function now automatically applies the 2-AP filter via its inputs
-        final distanceSquared = _calculateEuclideanDistance(liveRssiMap, storedRssiMap);
+        // Calculate Euclidean Distance (squared) using the improved helper function
+        // Now includes stability analysis and weighted matching for better discrimination
+        final distanceSquared = _calculateImprovedDistance(
+          liveRssiMap,
+          storedRssiMap,
+          liveStabilityScores: {}, // Simplified for user version
+          storedStabilityScores: {}, // Simplified for user version
+        );
 
         matchResults.add({
           'docId': doc.id,
           'distance': distanceSquared,
           'data': data,
+          'storedMap': storedRssiMap, // Include for debugging
         });
       }
 
@@ -245,25 +359,32 @@ class _ExhibitPageState extends State<ExhibitPage> {
         return;
       }
 
-      // 5. Find Best Match (Nearest Neighbor)
-      matchResults.sort((a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
+      // 5. Find Best Match with Collision Prevention
+      final bestMatch = _getBestMatchWithValidation(liveRssiMap, matchResults);
 
-      final bestMatch = matchResults.first;
+      if (bestMatch == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Unable to detect your location. Please try moving around or check your Wi-Fi connection.'),
+            duration: Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+
       final bestData = bestMatch['data'] as Map<String, dynamic>;
-      final confidenceDistance = bestMatch['distance'] as double;
-      
       final name = (bestData['name'] ?? '').toString();
       final description = (bestData['description'] ?? '').toString();
       final maybeAudio = (bestData['audioUrl'] as String?);
-      
+
       // 6. Update UI and trigger audio
       if (!mounted) return;
       setState(() {
         exhibitName = name.isEmpty ? 'Exhibit' : name;
         exhibitDescription = description.isEmpty ? 'No description available.' : description;
         audioUrl = maybeAudio;
-        _bestDistance = confidenceDistance; 
-        
+
         _audioPlayer.stop();
         _isPlaying = false;
         _position = Duration.zero;
@@ -277,7 +398,10 @@ class _ExhibitPageState extends State<ExhibitPage> {
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Exhibit: $exhibitName found! Confidence: ${confidenceDistance.toStringAsFixed(0)}')),
+        SnackBar(
+          content: Text('✅ $exhibitName found! Tap play to hear the description.'),
+          duration: const Duration(seconds: 3),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -286,6 +410,65 @@ class _ExhibitPageState extends State<ExhibitPage> {
       );
     } finally {
         if (mounted) setState(() => _isDetecting = false);
+    }
+  }
+
+  // --- ADVANCED COLLISION PREVENTION ---
+  Map<String, dynamic>? _getBestMatchWithValidation(
+    Map<String, int> liveRssiMap,
+    List<Map<String, dynamic>> matchResults,
+  ) {
+    if (matchResults.isEmpty) return null;
+
+    // Sort by distance (ascending - closest first)
+    matchResults.sort((a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
+
+    const double primaryThreshold = 800.0; // Primary match threshold
+    const double secondaryThreshold = 1500.0; // Secondary match threshold
+    const double rejectionThreshold = 3000.0; // Reject if worse than this
+
+    final bestMatch = matchResults.first;
+    final secondBest = matchResults.length > 1 ? matchResults[1] : null;
+
+    double bestDistance = bestMatch['distance'] as double;
+    double? secondDistance = secondBest?['distance'] as double?;
+
+    // 1. REJECT if distance is too high (no good matches)
+    if (bestDistance > rejectionThreshold) {
+      print('🔴 REJECTED: Distance too high (${bestDistance.toStringAsFixed(1)} > $rejectionThreshold)');
+      return null;
+    }
+
+    // 2. VALIDATE signal quality - check how many networks were matched
+    final bestStoredMap = (bestMatch['storedMap'] as Map<String, int>?) ?? {};
+    final matchedNetworks = liveRssiMap.keys.where((bssid) => bestStoredMap.containsKey(bssid)).length;
+
+    if (matchedNetworks < 2) {
+      print('🟡 WARNING: Only $matchedNetworks networks matched (minimum 2 required)');
+    }
+
+    // 3. CHECK discrimination ratio - best should be significantly better than second
+    if (secondDistance != null && secondDistance > 0) {
+      double discriminationRatio = secondDistance / bestDistance;
+
+      if (discriminationRatio < 1.5) {
+        print('🟡 WARNING: Poor discrimination ratio (${discriminationRatio.toStringAsFixed(2)} < 1.5)');
+        // Still allow but with warning
+      } else {
+        print('✅ GOOD: Strong discrimination (${discriminationRatio.toStringAsFixed(2)})');
+      }
+    }
+
+    // 4. FINAL VALIDATION
+    if (bestDistance <= primaryThreshold) {
+      print('✅ PRIMARY MATCH: Distance ${bestDistance.toStringAsFixed(1)} <= $primaryThreshold');
+      return bestMatch;
+    } else if (bestDistance <= secondaryThreshold && matchedNetworks >= 2) {
+      print('🟡 SECONDARY MATCH: Distance ${bestDistance.toStringAsFixed(1)} <= $secondaryThreshold with $matchedNetworks matches');
+      return bestMatch;
+    } else {
+      print('🔴 REJECTED: Distance ${bestDistance.toStringAsFixed(1)} > $secondaryThreshold or insufficient matches');
+      return null;
     }
   }
 
@@ -299,8 +482,6 @@ class _ExhibitPageState extends State<ExhibitPage> {
       seconds,
     ].join(':');
   }
-
-  // Helper widget for the audio player card
   Widget _buildAudioPlayerCard() {
     return Container(
       margin: const EdgeInsets.only(top: 20),
@@ -378,13 +559,29 @@ class _ExhibitPageState extends State<ExhibitPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Exhibit Description',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey[800],
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Exhibit Description',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey[800],
+                    ),
+                  ),
+                  // TTS Play/Pause Button
+                  if (exhibitDescription != null && exhibitDescription!.isNotEmpty)
+                    IconButton(
+                      icon: Icon(
+                        _isSpeaking ? Icons.stop_circle : Icons.play_circle_filled,
+                        size: 28,
+                        color: Colors.blue,
+                      ),
+                      onPressed: _playPauseTTS,
+                      tooltip: _isSpeaking ? 'Stop Description' : 'Play Description',
+                    ),
+                ],
               ),
               const Divider(height: 20, thickness: 1),
               Text(
@@ -402,7 +599,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
       ),
     );
   }
-  
+
   // Widget for the scanning status indicator
   Widget _buildScanStatus() {
     final statusText = _isDetecting ? 'Scanning for Fingerprint...' : 'Detection Ready';
@@ -454,6 +651,9 @@ class _ExhibitPageState extends State<ExhibitPage> {
         centerTitle: true,
         backgroundColor: Colors.black,
         elevation: 4,
+        actions: [
+          // Removed Wi-Fi debug and confidence features for cleaner UI
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -480,19 +680,28 @@ class _ExhibitPageState extends State<ExhibitPage> {
               ],
             ),
             
-            // Subtitle showing confidence
-            if (_bestDistance != null)
+            // Subtitle showing exhibit status
+            if (_isDetecting)
               Text(
-                'Location Confidence Score: ${_bestDistance!.toStringAsFixed(0)} (Lower is Better)',
+                'Detecting your location...',
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
                   color: Colors.amber[400],
                 ),
               )
+            else if (exhibitName != null && exhibitName != 'Exhibit')
+              Text(
+                'Exhibit detected successfully',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.green[400],
+                ),
+              )
             else
               Text(
-                'Waiting for detection signal...',
+                'Tap below to detect nearby exhibits',
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,

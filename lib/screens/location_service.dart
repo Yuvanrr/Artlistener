@@ -1,6 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
-import 'dart:math';
 
 // Data model for the matched exhibit result (Unchanged)
 class ExhibitMatchResult {

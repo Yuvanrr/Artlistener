@@ -31,9 +31,6 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
   final List<XFile> _pickedImages = [];
   final Map<String, double> _uploadProgress = {}; // filePath -> 0..1
 
-  // Define the critical SSIDs for fingerprinting consistency
-  static const List<String> _targetSsids = ['MCA', 'PSG'];
-
   @override
   void initState() {
     super.initState();
@@ -225,27 +222,69 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     return urls;
   }
 
-  // --- Submission Logic (Updated for 2-AP KNN consistency) ---
+  // --- Submission Logic (Updated for 3-AP KNN consistency) ---
   Future<void> _onSetExhibit() async {
     if (!_formKey.currentState!.validate()) return;
     
     // 1. Create the KNN-compatible Wi-Fi Fingerprint Vector
-    // Filter the scan results to include ONLY the target SSIDs ('MCA', 'PSG')
-    final List<Map<String, dynamic>> wifiFingerprint = _wifiNetworks
-        .where((ap) => _targetSsids.contains(ap.ssid) && ap.bssid != null) 
-        .map((ap) => {
-              'bssid': ap.bssid,
-              'ssid': ap.ssid,
-              'rssi': ap.level,
-              'frequency': ap.frequency, 
-            })
-        .toList();
+    // Filter the scan results to include compatible networks (improved matching)
+    final List<Map<String, dynamic>> wifiFingerprint = [];
+    const List<String> targetSsids = [
+      'YuvanRR', 'realme 13 Pro 5G', 'Praveen\'s A16',
+      // Add more networks to improve uniqueness
+      'MCA', 'PSG', // Legacy networks
+      'YuvanRR_5G', 'realme 13 Pro 5G_5GHz',
+      'AndroidAP', 'iPhone', 'Redmi',
+      'Guest', 'Office', 'Conference'
+    ];
+
+    const List<String> fallbackSsids = [
+      'Hidden Network', 'AndroidAP', 'iPhone', 'Redmi',
+      'Guest', 'Office', 'Conference', 'Meeting'
+    ];
+
+    for (var ap in _wifiNetworks) {
+      final ssid = ap.ssid.trim();
+
+      // Primary matching: exact target SSIDs (case insensitive)
+      if (targetSsids.any((target) => ssid.toLowerCase() == target.toLowerCase())) {
+        wifiFingerprint.add({
+          'bssid': ap.bssid,
+          'ssid': ap.ssid,
+          'rssi': ap.level,
+          'frequency': ap.frequency,
+        });
+        continue;
+      }
+
+      // Fallback matching: old SSIDs (case insensitive)
+      if (fallbackSsids.any((fallback) => ssid.toLowerCase() == fallback.toLowerCase())) {
+        wifiFingerprint.add({
+          'bssid': ap.bssid,
+          'ssid': ap.ssid,
+          'rssi': ap.level,
+          'frequency': ap.frequency,
+        });
+        continue;
+      }
+
+      // Additional fallback: networks containing target keywords
+      if (targetSsids.any((target) =>
+        ssid.toLowerCase().contains(target.toLowerCase().split(' ').first))) {
+        wifiFingerprint.add({
+          'bssid': ap.bssid,
+          'ssid': ap.ssid,
+          'rssi': ap.level,
+          'frequency': ap.frequency,
+        });
+      }
+    }
     
     // IMPORTANT CHECK: Ensure we found at least one of the target APs
     if (wifiFingerprint.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text('Target Wi‑Fi networks (MCA, PSG) not found. Move closer or rescan.'),
+                content: Text('Target Wi‑Fi networks (YuvanRR, realme 13 Pro 5G, Praveen\'s A16) not found. Move closer or rescan.'),
                 backgroundColor: Colors.red,
             ),
         );
