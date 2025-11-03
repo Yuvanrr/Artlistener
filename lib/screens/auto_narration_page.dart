@@ -31,6 +31,13 @@ class _AutoNarrationPageState extends State<AutoNarrationPage> {
     super.initState();
     _tts.setLanguage('en-US');
     _tts.setSpeechRate(0.5);
+    _initializeServices();
+  }
+
+  Future<void> _initializeServices() async {
+    print('🔄 Initializing auto narration services...');
+    final sensorSuccess = await _locationService.initialize();
+    print('✅ Auto narration services initialized (Sensors: $sensorSuccess)');
   }
 
   @override
@@ -38,6 +45,7 @@ class _AutoNarrationPageState extends State<AutoNarrationPage> {
     _detectionTimer?.cancel();
     _tts.stop();
     _audioPlayer.dispose();
+    _locationService.dispose(); // Clean up sensor fusion resources
     super.dispose();
   }
 
@@ -52,7 +60,7 @@ class _AutoNarrationPageState extends State<AutoNarrationPage> {
         return;
       }
       setState(() {
-        _currentStatus = "Scanning Wi-Fi signal...";
+        _currentStatus = "Scanning Wi-Fi and motion sensors...";
       });
 
       try {
@@ -62,7 +70,7 @@ class _AutoNarrationPageState extends State<AutoNarrationPage> {
         if (!mounted) return;
         if (result == null) {
           setState(() {
-            _currentStatus = "No confident match found. Searching...";
+            _currentStatus = "No confident match found. Please stand still...";
             _currentExhibitName = "---";
             _currentExhibitConfidence = null;
           });

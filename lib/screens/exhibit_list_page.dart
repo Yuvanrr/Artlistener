@@ -141,16 +141,12 @@ class _ExhibitListPageState extends State<ExhibitListPage> {
               final name = (data['name'] ?? '').toString();
               final description = (data['description'] ?? '').toString();
               
-              // Logic to extract WiFi SSID (as updated previously)
+              // Logic to extract WiFi SSID from wifi_fingerprint
               String? wifiSsid;
               final List<dynamic>? fingerprint = data['wifi_fingerprint'] as List<dynamic>?;
               if (fingerprint != null && fingerprint.isNotEmpty) {
                   final strongestAp = fingerprint.first as Map<String, dynamic>;
                   wifiSsid = strongestAp['ssid']?.toString().trim();
-              }
-              else if (data.containsKey('selected_ap_info')) {
-                  final apInfo = data['selected_ap_info'] as Map<String, dynamic>;
-                  wifiSsid = apInfo['ssid']?.toString().trim();
               }
               
               // Handle audio URL
@@ -267,7 +263,7 @@ class _ExhibitCard extends StatelessWidget {
             _InfoRow(
               icon: Icons.wifi,
               label: 'WiFi Network',
-              value: exhibit.wifiSsid!,
+              value: exhibit.wifiSsid ?? 'N/A',
             ),
             const SizedBox(height: 8),
             if (exhibit.audioUrl != null) ...[
@@ -282,21 +278,16 @@ class _ExhibitCard extends StatelessWidget {
             _InfoRow(
               icon: Icons.calendar_today,
               label: 'Created',
-              value: _formatDate(exhibit.createdAt),
+              value: exhibit.formattedCreatedDate,
             ),
           ],
         ),
       ),
     );
   }
-
-  String _formatDate(DateTime date) {
-    return '${date.day}/${date.month}/${date.year}';
-  }
 }
 
-// --- Supporting Widgets (Unchanged) ---
-
+// Helper widget for displaying info rows
 class _InfoRow extends StatelessWidget {
   final IconData icon;
   final String label;

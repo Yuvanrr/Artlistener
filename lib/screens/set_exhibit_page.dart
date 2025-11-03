@@ -20,8 +20,7 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
   final _exhibitDescController = TextEditingController();
 
   List<wifi_scan.WiFiAccessPoint> _wifiNetworks = [];
-  String? _selectedSsid;
-  wifi_scan.WiFiAccessPoint? _selectedAp; // Used for single-AP info/UI only
+  List<wifi_scan.WiFiAccessPoint> _selectedWifiNetworks = [];
 
   bool _isLoading = false;
   bool _isSubmitting = false;
@@ -44,14 +43,6 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     super.dispose();
   }
 
-  // Helper functions (Unchanged)
-  String? _enumToLabel(dynamic value) {
-    if (value == null) return null;
-    final s = value.toString();
-    if (s.contains('.')) return s.split('.').last;
-    return s;
-  }
-
   String _uniqueName(String original) {
     final ts = DateTime.now().microsecondsSinceEpoch;
     final noSpaces = original.replaceAll(RegExp(r'\s+'), '_');
@@ -64,6 +55,22 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     } catch (_) {
       return false;
     }
+  }
+
+  int _frequencyToChannel(int frequency) {
+    // 2.4GHz channels
+    if (frequency >= 2400 && frequency <= 2500) {
+      return ((frequency - 2401) ~/ 5) + 1;
+    }
+    // 5GHz channels
+    else if (frequency >= 5000 && frequency <= 6000) {
+      // Common 5GHz channels
+      if (frequency >= 5150 && frequency <= 5250) return 36 + ((frequency - 5150) ~/ 10) * 2;
+      if (frequency >= 5250 && frequency <= 5350) return 52 + ((frequency - 5250) ~/ 10) * 2;
+      if (frequency >= 5470 && frequency <= 5725) return 100 + ((frequency - 5470) ~/ 10) * 2;
+      if (frequency >= 5725 && frequency <= 5875) return 116 + ((frequency - 5725) ~/ 10) * 2;
+    }
+    return 0; // Unknown channel
   }
 
   // --- Wi-Fi Scan Logic ---
@@ -129,11 +136,34 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     }
   }
 
-  void _removePicked(int index) {
+  Future<void> _removePicked(int index) async {
     setState(() {
       final path = _pickedImages[index].path;
       _uploadProgress.remove(path);
       _pickedImages.removeAt(index);
+    });
+  }
+
+  void _selectAllWifiNetworks() {
+    setState(() {
+      _selectedWifiNetworks.clear();
+      _selectedWifiNetworks.addAll(_wifiNetworks);
+    });
+  }
+
+  void _clearWifiSelection() {
+    setState(() {
+      _selectedWifiNetworks.clear();
+    });
+  }
+
+  void _toggleWifiSelection(wifi_scan.WiFiAccessPoint ap) {
+    setState(() {
+      if (_selectedWifiNetworks.contains(ap)) {
+        _selectedWifiNetworks.remove(ap);
+      } else {
+        _selectedWifiNetworks.add(ap);
+      }
     });
   }
 
@@ -222,91 +252,45 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
     return urls;
   }
 
-  // --- Submission Logic (Updated for 3-AP KNN consistency) ---
+  // --- Submission Logic (Updated for manual WiFi selection) ---
   Future<void> _onSetExhibit() async {
     if (!_formKey.currentState!.validate()) return;
-    
-    // 1. Create the KNN-compatible Wi-Fi Fingerprint Vector
-    // Filter the scan results to include compatible networks (improved matching)
+
+    // Check if at least one WiFi network is selected
+    if (_selectedWifiNetworks.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select at least one Wi-Fi network for exhibit detection.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // 1. Create Wi-Fi Fingerprint Vector from selected networks
     final List<Map<String, dynamic>> wifiFingerprint = [];
-    const List<String> targetSsids = [
-      'YuvanRR', 'realme 13 Pro 5G', 'Praveen\'s A16',
-      // Add more networks to improve uniqueness
-      'MCA', 'PSG', // Legacy networks
-      'YuvanRR_5G', 'realme 13 Pro 5G_5GHz',
-      'AndroidAP', 'iPhone', 'Redmi',
-      'Guest', 'Office', 'Conference'
-    ];
 
-    const List<String> fallbackSsids = [
-      'Hidden Network', 'AndroidAP', 'iPhone', 'Redmi',
-      'Guest', 'Office', 'Conference', 'Meeting'
-    ];
-
-    for (var ap in _wifiNetworks) {
-      final ssid = ap.ssid.trim();
-
-      // Primary matching: exact target SSIDs (case insensitive)
-      if (targetSsids.any((target) => ssid.toLowerCase() == target.toLowerCase())) {
+    for (var ap in _selectedWifiNetworks) {
+      if (ap.bssid.isNotEmpty) {
         wifiFingerprint.add({
           'bssid': ap.bssid,
           'ssid': ap.ssid,
           'rssi': ap.level,
           'frequency': ap.frequency,
+          'channel': _frequencyToChannel(ap.frequency),
         });
-        continue;
-      }
-
-      // Fallback matching: old SSIDs (case insensitive)
-      if (fallbackSsids.any((fallback) => ssid.toLowerCase() == fallback.toLowerCase())) {
-        wifiFingerprint.add({
-          'bssid': ap.bssid,
-          'ssid': ap.ssid,
-          'rssi': ap.level,
-          'frequency': ap.frequency,
-        });
-        continue;
-      }
-
-      // Additional fallback: networks containing target keywords
-      if (targetSsids.any((target) =>
-        ssid.toLowerCase().contains(target.toLowerCase().split(' ').first))) {
-        wifiFingerprint.add({
-          'bssid': ap.bssid,
-          'ssid': ap.ssid,
-          'rssi': ap.level,
-          'frequency': ap.frequency,
-        });
+        print('💾 Storing selected AP: ${ap.ssid} (${ap.bssid}) | RSSI: ${ap.level} dBm | Freq: ${ap.frequency} MHz');
       }
     }
-    
-    // IMPORTANT CHECK: Ensure we found at least one of the target APs
-    if (wifiFingerprint.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('Target Wi‑Fi networks (YuvanRR, realme 13 Pro 5G, Praveen\'s A16) not found. Move closer or rescan.'),
-                backgroundColor: Colors.red,
-            ),
-        );
-        return;
-    }
-    
+
+    print('✅ WiFi fingerprint created with ${wifiFingerprint.length} selected APs');
+
     setState(() => _isSubmitting = true);
 
     try {
       final col = FirebaseFirestore.instance.collection('c_guru');
       final docRef = col.doc(); 
       
-      final ap = _selectedAp;
-      final Map<String, dynamic> selectedApInfo = ap != null ? {
-        'ssid': ap.ssid ?? '',
-        'bssid': ap.bssid ?? '',
-        'rssi': ap.level,
-        'frequency': ap.frequency,
-        'channelWidth': _enumToLabel(ap.channelWidth),
-      } : {};
-
-
       // Upload images
       List<String> photoUrls = [];
       if (_pickedImages.isNotEmpty) {
@@ -325,9 +309,8 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
       final newExhibit = {
         'name': _exhibitNameController.text.trim(),
         'description': _exhibitDescController.text.trim(),
-        'wifi_fingerprint': wifiFingerprint, // THE FILTERED KNN VECTOR
-        'selected_ap_info': selectedApInfo,  // Auxiliary info (optional)
-        'photos': photoUrls, 
+        'wifi_fingerprint': wifiFingerprint, // THE SELECTED NETWORKS VECTOR
+        'photos': photoUrls,
         'timestamp': FieldValue.serverTimestamp(),
       };
 
@@ -348,9 +331,8 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
       // Clear the form and reset state
       _formKey.currentState!.reset();
       setState(() {
-        _selectedSsid = null;
-        _selectedAp = null;
         _wifiNetworks.clear();
+        _selectedWifiNetworks.clear();
         _pickedImages.clear();
         _uploadProgress.clear();
       });
@@ -373,9 +355,18 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
       children: [
         Icon(icon, size: 20, color: Colors.black87),
         const SizedBox(width: 8),
-        Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-        const Spacer(),
-        if (trailing != null) trailing,
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+        ),
+        if (trailing != null) ...[
+          const SizedBox(width: 8),
+          trailing,
+        ],
       ],
     );
   }
@@ -414,85 +405,94 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
   }
 
   Widget _wifiCard(wifi_scan.WiFiAccessPoint ap) {
-    return InkWell(
-      onTap: () {
-        setState(() {
-          _selectedSsid = ap.ssid;
-          _selectedAp = ap;
-        });
-      },
-      borderRadius: BorderRadius.circular(12),
+    final isSelected = _selectedWifiNetworks.contains(ap);
+    return GestureDetector(
+      onTap: () => _toggleWifiSelection(ap),
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: _selectedAp?.bssid == ap.bssid ? Colors.amber[50] : Colors.white,
+          color: isSelected ? Colors.amber[50] : Colors.grey[50],
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: _selectedAp?.bssid == ap.bssid ? Colors.amber[700]! : Colors.grey[200]!,
-            width: _selectedAp?.bssid == ap.bssid ? 1.5 : 1,
+            color: isSelected ? Colors.amber[300]! : Colors.grey[200]!,
+            width: isSelected ? 2 : 1,
           ),
         ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.amber[100],
-                shape: BoxShape.circle,
-              ),
-              child: Icon(Icons.wifi, color: Colors.amber[900]),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    ap.ssid.isNotEmpty ? ap.ssid : 'Hidden Network',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 4),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 4,
-                    children: [
-                      _chip('BSSID', ap.bssid ?? '—'),
-                      _chip('RSSI', '${ap.level} dBm'),
-                      _chip('Freq', '${ap.frequency} MHz'),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            Column(
-              children: [
-                _signalIndicator(ap.level),
-                const SizedBox(height: 8),
-                Radio<String>(
-                  value: ap.ssid,
-                  groupValue: _selectedSsid,
-                  activeColor: Colors.black,
-                  onChanged: (_) {
-                    setState(() {
-                      _selectedSsid = ap.ssid;
-                      _selectedAp = ap;
-                    });
-                  },
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: isSelected ? Colors.amber[100] : Colors.amber[100],
+                  shape: BoxShape.circle,
                 ),
-              ],
-            ),
-          ],
+                child: Icon(
+                  isSelected ? Icons.check_circle : Icons.wifi,
+                  color: isSelected ? Colors.amber[900] : Colors.amber[900],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      ap.ssid.isNotEmpty ? ap.ssid : 'Hidden Network',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 4,
+                      children: [
+                        _chip('BSSID', ap.bssid.isNotEmpty ? ap.bssid : '—'),
+                        _chip('RSSI', '${ap.level} dBm'),
+                        _chip('Freq', '${ap.frequency} MHz'),
+                        _chip('Channel', '${_frequencyToChannel(ap.frequency)}'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                alignment: Alignment.topCenter,
+                child: _signalIndicator(ap.level),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   Widget _chip(String label, String value) {
+    // Handle long values by truncating them intelligently
+    String displayValue = value;
+    if (value.length > 12) {
+      if (label == 'BSSID') {
+        displayValue = '${value.substring(0, 8)}...';
+      } else if (value.contains(' ')) {
+        // For values with spaces, truncate to first word or significant part
+        final parts = value.split(' ');
+        if (parts.length > 1 && parts[0].length < 8) {
+          displayValue = '${parts[0]}...';
+        } else {
+          displayValue = '${value.substring(0, 9)}...';
+        }
+      } else {
+        displayValue = '${value.substring(0, 9)}...';
+      }
+    }
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      constraints: BoxConstraints(maxWidth: 100), // Reduced from 120 for better fit
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       decoration: BoxDecoration(
         color: Colors.grey[100],
         borderRadius: BorderRadius.circular(6),
@@ -501,9 +501,18 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('$label: ',
-              style: TextStyle(color: Colors.grey[700], fontSize: 12, fontWeight: FontWeight.w600)),
-          Text(value, style: const TextStyle(fontSize: 12)),
+          Text(
+            '$label: ',
+            style: TextStyle(color: Colors.grey[700], fontSize: 11, fontWeight: FontWeight.w600),
+          ),
+          Expanded(
+            child: Text(
+              displayValue,
+              style: const TextStyle(fontSize: 11),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          ),
         ],
       ),
     );
@@ -543,12 +552,18 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
               border: Border.all(color: Colors.grey[200]!),
             ),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Icon(Icons.image_outlined, color: Colors.grey[500]),
                 const SizedBox(width: 12),
-                Text(
-                  'No photos selected. Add from gallery or camera.',
-                  style: TextStyle(color: Colors.grey[700]),
+                Expanded(
+                  child: Text(
+                    'No photos selected. Add from gallery or camera.',
+                    style: TextStyle(color: Colors.grey[700]),
+                    softWrap: true,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
             ),
@@ -686,42 +701,59 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
                     // Scan status
                     Row(
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: _isLoading ? Colors.blue[50] : Colors.green[50],
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: _isLoading ? Colors.blue : Colors.green,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _isLoading ? Icons.wifi_find : Icons.check_circle,
-                                size: 16,
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: _isLoading ? Colors.blue[50] : Colors.green[50],
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
                                 color: _isLoading ? Colors.blue : Colors.green,
                               ),
-                              const SizedBox(width: 6),
-                              Text(
-                                _isLoading
-                                    ? 'Scanning Wi‑Fi...'
-                                    : 'Found ${_wifiNetworks.length} networks',
-                                style: TextStyle(
-                                  fontSize: 12.5,
-                                  color: _isLoading ? Colors.blue[900] : Colors.green[900],
-                                  fontWeight: FontWeight.w600,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  _isLoading ? Icons.wifi_find : Icons.check_circle,
+                                  size: 16,
+                                  color: _isLoading ? Colors.blue : Colors.green,
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    _isLoading
+                                        ? 'Scanning Wi‑Fi...'
+                                        : 'Found ${_wifiNetworks.length} networks',
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: _isLoading ? Colors.blue[900] : Colors.green[900],
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                    maxLines: 1,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                        const Spacer(),
-                        TextButton.icon(
-                          onPressed: _isLoading ? null : _scanWifiNetworks,
-                          style: TextButton.styleFrom(foregroundColor: Colors.black87),
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('Rescan'),
+                        const SizedBox(width: 12),
+                        Flexible(
+                          child: TextButton.icon(
+                            onPressed: _isLoading ? null : _scanWifiNetworks,
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.black87,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            ),
+                            icon: const Icon(Icons.refresh, size: 16),
+                            label: const Text(
+                              'Rescan',
+                              style: TextStyle(fontSize: 12),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -768,14 +800,63 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
                     const SizedBox(height: 20),
 
                     // Step 2: Wi‑Fi selection
-                    _sectionHeader(Icons.wifi, 'Select Wi‑Fi'),
+                    _sectionHeader(
+                      Icons.wifi,
+                      'Select Wi‑Fi Networks',
+                      trailing: _selectedWifiNetworks.isEmpty
+                          ? null
+                          : Text(
+                              '${_selectedWifiNetworks.length} selected',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.amber,
+                              ),
+                            ),
+                    ),
                     const SizedBox(height: 8),
-                    // Hint about KNN data capture
+                    // Selection controls
+                    if (_wifiNetworks.isNotEmpty) ...[
+                      Row(
+                        children: [
+                          Flexible(
+                            child: TextButton.icon(
+                              onPressed: _selectAllWifiNetworks,
+                              icon: const Icon(Icons.select_all, size: 16),
+                              label: const Text('Select All'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.black87,
+                                textStyle: const TextStyle(fontSize: 12),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: TextButton.icon(
+                              onPressed: _clearWifiSelection,
+                              icon: const Icon(Icons.clear, size: 16),
+                              label: const Text('Clear All'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.black87,
+                                textStyle: const TextStyle(fontSize: 12),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    // Updated hint: allow manual selection
                     Padding(
                         padding: const EdgeInsets.only(bottom: 8.0),
                         child: Text(
-                            'Note: Selecting one Wi-Fi network below confirms the location, but the system saves the details of the top 10 networks for better visitor location accuracy.',
+                            'Select the Wi-Fi networks that should trigger this exhibit detection. You can select multiple networks.',
                             style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                            softWrap: true,
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
                         ),
                     ),
                   ],
@@ -812,6 +893,9 @@ class _SetExhibitPageState extends State<SetExhibitPage> {
                         Text(
                           'Make sure Location is On and try rescanning.',
                           style: TextStyle(color: Colors.grey[600], fontSize: 12.5),
+                          softWrap: true,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),

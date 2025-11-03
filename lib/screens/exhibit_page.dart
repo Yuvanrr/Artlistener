@@ -1,104 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:geolocator/geolocator.dart';
 import 'location_service.dart';
-import 'package:wifi_scan/wifi_scan.dart' as wifi_scan;
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'dart:math';
 
 // Audio player states for the audio player
 enum AudioPlayerState { stopped, playing, paused, completed }
-
-// --- KNN HELPER FUNCTION (MODIFIED FOR 3-AP ROBUSTNESS) ---
-// Calculates the Euclidean Distance squared, only using specific target SSIDs.
-// NOTE: This implementation is simplified for testing robustness in a fixed environment.
-double _calculateImprovedDistance(
-    Map<String, int> liveRssiMap,
-    Map<String, int> storedRssiMap,
-    {Map<String, double>? liveStabilityScores,
-    Map<String, double>? storedStabilityScores}) {
-
-  const List<String> targetSsids = ['YuvanRR', 'realme 13 Pro 5G', 'Praveen\'s A16'];
-
-  double squaredDifferenceSum = 0.0;
-  const int defaultRssi = -100;
-  int matchedNetworks = 0;
-  double totalWeight = 0.0;
-  Map<String, double> networkWeights = {};
-
-  // Combine all BSSIDs from both maps
-  final allBssids = {...liveRssiMap.keys, ...storedRssiMap.keys};
-
-  for (final bssid in allBssids) {
-    final liveRssi = liveRssiMap[bssid] ?? defaultRssi;
-    final storedRssi = storedRssiMap[bssid] ?? defaultRssi;
-
-    // Only calculate if this BSSID was in the stored fingerprint
-    if (storedRssiMap.containsKey(bssid)) {
-      final diff = (liveRssi - storedRssi);
-      squaredDifferenceSum += diff * diff;
-      matchedNetworks++;
-
-      // Enhanced weighting system
-      double weight = 1.0;
-
-      // 1. Weight by signal strength (stronger = more reliable)
-      if (storedRssi > -50) weight *= 2.0;
-      else if (storedRssi > -70) weight *= 1.5;
-
-      // 2. Weight by network type (target networks get higher priority)
-      if (targetSsids.any((target) => bssid.toLowerCase().contains(target.toLowerCase().split(' ').first))) {
-        weight *= 1.3;
-      }
-
-      // 3. Weight by stability (more stable signals are more reliable)
-      final storedStability = storedStabilityScores?[bssid] ?? 5.0; // Default 5dB if unknown
-      final liveStability = liveStabilityScores?[bssid] ?? 5.0;
-
-      // Lower stability (lower variance) gets higher weight
-      weight *= (1.0 / (1.0 + storedStability * 0.1)); // Scale stability to 0.5-1.0 range
-      weight *= (1.0 / (1.0 + liveStability * 0.1));
-
-      // 4. Weight by frequency band (5GHz is more stable)
-      if (bssid.contains('5G') || bssid.contains('5GHz')) {
-        weight *= 1.2;
-      }
-
-      // 5. Weight by uniqueness (penalize common networks)
-      if (['AndroidAP', 'iPhone', 'Redmi', 'Guest'].any((common) =>
-          bssid.toLowerCase().contains(common.toLowerCase()))) {
-        weight *= 0.8;
-      }
-
-      squaredDifferenceSum *= weight;
-      totalWeight += weight;
-      networkWeights[bssid] = weight;
-    }
-  }
-
-  // Normalize by total weight
-  if (totalWeight > 0) {
-    squaredDifferenceSum = squaredDifferenceSum / totalWeight;
-  }
-
-  // Enhanced penalty system
-  double matchQuality = matchedNetworks / max(1, allBssids.length);
-
-  if (matchedNetworks < 2) {
-    squaredDifferenceSum *= 4.0;
-  } else if (matchedNetworks < 3) {
-    squaredDifferenceSum *= 2.0;
-  } else if (matchQuality < 0.5) {
-    squaredDifferenceSum *= 1.5;
-  }
-
-  print('📊 Enhanced Match: $matchedNetworks networks, quality ${(matchQuality * 100).toStringAsFixed(1)}%, weights: ${networkWeights.toString()}');
-
-  return squaredDifferenceSum;
-}
-// --- END KNN HELPER FUNCTION ---
-
 
 class ExhibitPage extends StatefulWidget {
   const ExhibitPage({super.key});
@@ -112,11 +19,10 @@ class _ExhibitPageState extends State<ExhibitPage> {
   String? exhibitName;
   String? exhibitDescription;
   String? audioUrl;
+  List<String>? photoUrls; // Add image URLs
   bool _isDetecting = false; // State for scanning animation
 
-  final LocationService _locationService = LocationService(); // INSTANCE OF NEW SERVICE
-
-  // Audio player and TTS setup (Simplified for brevity)
+  // Audio player and TTS setup
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isPlaying = false;
   Duration _duration = Duration.zero;
@@ -125,6 +31,9 @@ class _ExhibitPageState extends State<ExhibitPage> {
   final FlutterTts _tts = FlutterTts();
   bool _isSpeaking = false;
 
+  // Enhanced location service with sensor fusion
+  late LocationService _locationService;
+
   @override
   void initState() {
     super.initState();
@@ -132,7 +41,11 @@ class _ExhibitPageState extends State<ExhibitPage> {
     exhibitName = 'Exhibit';
     exhibitDescription = 'Tap the button to detect location and play the description.';
 
-    // Audio player listeners (Simplified for brevity)
+    // Initialize location service with sensor fusion
+    _locationService = LocationService();
+    _initializeServices();
+
+    // Audio player listeners
     _audioPlayer.onPlayerStateChanged.listen((state) {
       setState(() {
         _isPlaying = state == PlayerState.playing;
@@ -150,16 +63,43 @@ class _ExhibitPageState extends State<ExhibitPage> {
     _tts.setSpeechRate(0.5);
     _tts.setVolume(1.0);
     _tts.setPitch(1.0);
-    _tts.setStartHandler(() => setState(() => _isSpeaking = true));
-    _tts.setCompletionHandler(() => setState(() => _isSpeaking = false));
-    _tts.setCancelHandler(() => setState(() => _isSpeaking = false));
-    _tts.setErrorHandler((msg) => setState(() => _isSpeaking = false));
+    _tts.setStartHandler(() {
+      if (mounted) setState(() => _isSpeaking = true);
+    });
+    _tts.setCompletionHandler(() {
+      if (mounted) setState(() => _isSpeaking = false);
+    });
+    _tts.setCancelHandler(() {
+      if (mounted) setState(() => _isSpeaking = false);
+    });
+    _tts.setErrorHandler((msg) {
+      if (mounted) setState(() => _isSpeaking = false);
+    });
+  }
+
+  Future<void> _initializeServices() async {
+    print('🔄 Initializing enhanced detection services...');
+    try {
+      final sensorSuccess = await _locationService.initialize();
+      print('✅ Services initialized (Sensors: $sensorSuccess)');
+    } catch (e) {
+      print('❌ Service initialization failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to initialize detection services: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   @override
   void dispose() {
     _audioPlayer.dispose();
     _tts.stop();
+    _locationService.dispose(); // Clean up sensor fusion resources
     super.dispose();
   }
 
@@ -199,191 +139,37 @@ class _ExhibitPageState extends State<ExhibitPage> {
     }
   }
 
-  // --- TEMPORAL ANALYSIS: Track signal stability over time ---
-  Future<Map<String, dynamic>> _getEnhancedFingerprint(int scanCount) async {
-    final Map<String, List<int>> rssiHistory = {};
-    final Map<String, List<int>> temporalData = {}; // Track RSSI over time
-
-    for (int i = 0; i < scanCount; i++) {
-      if (i > 0) await Future.delayed(const Duration(milliseconds: 300));
-
-      await wifi_scan.WiFiScan.instance.startScan();
-      final currentScan = await wifi_scan.WiFiScan.instance.getScannedResults();
-
-      const List<String> targetSsids = [
-        'YuvanRR', 'realme 13 Pro 5G', 'Praveen\'s A16',
-        'MCA', 'PSG', 'YuvanRR_5G', 'realme 13 Pro 5G_5GHz',
-        'AndroidAP', 'iPhone', 'Redmi', 'Guest', 'Office', 'Conference'
-      ];
-
-      const List<String> fallbackSsids = [
-        'Hidden Network', 'AndroidAP', 'iPhone', 'Redmi',
-        'Guest', 'Office', 'Conference', 'Meeting'
-      ];
-
-      for (var ap in currentScan) {
-        final ssid = ap.ssid.trim();
-
-        if (targetSsids.any((target) => ssid.toLowerCase() == target.toLowerCase()) ||
-            fallbackSsids.any((fallback) => ssid.toLowerCase() == fallback.toLowerCase()) ||
-            targetSsids.any((target) => ssid.toLowerCase().contains(target.toLowerCase().split(' ').first))) {
-
-          rssiHistory.putIfAbsent(ap.bssid, () => []).add(ap.level);
-
-          // Track temporal stability (how much RSSI varies over time)
-          temporalData.putIfAbsent(ap.bssid, () => []).add(ap.level);
-        }
-      }
-    }
-
-    final Map<String, int> averagedRssiMap = {};
-    final Map<String, double> stabilityScores = {}; // Lower variance = higher stability
-
-    rssiHistory.forEach((bssid, rssiList) {
-      final averageRssi = (rssiList.reduce((a, b) => a + b) / rssiList.length).round();
-      averagedRssiMap[bssid] = averageRssi;
-
-      // Calculate stability (lower variance = more stable signal)
-      if (rssiList.length > 1) {
-        final mean = rssiList.reduce((a, b) => a + b) / rssiList.length;
-        final variance = rssiList.map((rssi) => pow(rssi - mean, 2)).reduce((a, b) => a + b) / rssiList.length;
-        stabilityScores[bssid] = sqrt(variance); // Standard deviation
-      } else {
-        stabilityScores[bssid] = 0.0; // Perfect stability if only one sample
-      }
-    });
-
-    return {
-      'rssiMap': averagedRssiMap,
-      'stabilityScores': stabilityScores,
-      'networkCount': averagedRssiMap.length,
-      'scanQuality': stabilityScores.values.isNotEmpty ? stabilityScores.values.reduce((a, b) => a + b) / stabilityScores.length : 0.0
-    };
-  }
-
-  // --- MANUAL MODE: TRIGGERS LOCATION SERVICE ---
+  // --- MANUAL DETECTION ---
   Future<void> _getNewExhibitDescription() async {
     if (_isDetecting) return;
     setState(() => _isDetecting = true);
 
     try {
-      // 1. Check Permissions and Location Services
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please enable Location Services/GPS.')),
-        );
-        return;
-      }
-      
-      // NOTE: We are bypassing the LocationService class to implement the 3-AP filter here.
-      // In a cleaner app, this filtering logic would be built into the LocationService class.
-      
-      // 2. Find Closest Exhibit using the enhanced fingerprint system
-      // Now using temporal analysis and stability tracking:
-      final enhancedFingerprint = await _getEnhancedFingerprint(5);
-      final liveRssiMap = enhancedFingerprint['rssiMap'] as Map<String, int>;
+      // Use the LocationService for detection (WiFi + Sensor Fusion)
+      final result = await _locationService.findClosestExhibit();
 
-      if (liveRssiMap.isEmpty) {
+      if (result == null) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('No Wi-Fi networks detected. Please check your Wi-Fi is enabled.'),
-            duration: Duration(seconds: 5),
-          ),
-        );
-        return;
-      }
-
-      // Show enhanced scanning results
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Detecting nearby exhibits...'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-
-      // 3. Query Firestore for all exhibits
-      final qs = await FirebaseFirestore.instance.collection('c_guru').get();
-
-      if (qs.docs.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No exhibits in database')),
-        );
-        return;
-      }
-
-      // 4. Calculate Distance (KNN step)
-      final List<Map<String, dynamic>> matchResults = [];
-      
-      for (final doc in qs.docs) {
-        final data = doc.data();
-        final List<dynamic>? wifiFingerprintList = data['wifi_fingerprint'] as List<dynamic>?;
-        
-        if (wifiFingerprintList == null || wifiFingerprintList.isEmpty) continue;
-
-        // Create stored RSSI map, ensuring only YuvanRR, realme 13 Pro 5G, and Praveen's A16 BSSIDs are considered
-        final Map<String, int> storedRssiMap = {
-          for (var item in wifiFingerprintList)
-            if (item is Map<String, dynamic> && item['bssid'] is String && item['rssi'] is num)
-              item['bssid'] as String: (item['rssi'] as num).toInt()
-        };
-
-        if (storedRssiMap.isEmpty) continue;
-
-        // Calculate Euclidean Distance (squared) using the improved helper function
-        // Now includes stability analysis and weighted matching for better discrimination
-        final distanceSquared = _calculateImprovedDistance(
-          liveRssiMap,
-          storedRssiMap,
-          liveStabilityScores: {}, // Simplified for user version
-          storedStabilityScores: {}, // Simplified for user version
-        );
-
-        matchResults.add({
-          'docId': doc.id,
-          'distance': distanceSquared,
-          'data': data,
-          'storedMap': storedRssiMap, // Include for debugging
-        });
-      }
-
-      if (matchResults.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not match any exhibit fingerprints.')),
-        );
-        return;
-      }
-
-      // 5. Find Best Match with Collision Prevention
-      final bestMatch = _getBestMatchWithValidation(liveRssiMap, matchResults);
-
-      if (bestMatch == null) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Unable to detect your location. Please try moving around or check your Wi-Fi connection.'),
+            content: Text('No exhibit detected. Please stand still and ensure stable WiFi connection.'),
             duration: Duration(seconds: 4),
+            backgroundColor: Colors.orange,
           ),
         );
         return;
       }
 
-      final bestData = bestMatch['data'] as Map<String, dynamic>;
-      final name = (bestData['name'] ?? '').toString();
-      final description = (bestData['description'] ?? '').toString();
-      final maybeAudio = (bestData['audioUrl'] as String?);
-
-      // 6. Update UI and trigger audio
+      // 3. Update UI and trigger audio
       if (!mounted) return;
       setState(() {
-        exhibitName = name.isEmpty ? 'Exhibit' : name;
-        exhibitDescription = description.isEmpty ? 'No description available.' : description;
-        audioUrl = maybeAudio;
+        exhibitName = result.name.isEmpty ? 'Exhibit' : result.name;
+        exhibitDescription = result.description.isEmpty ? 'No description available.' : result.description;
+        audioUrl = result.audioUrl;
+
+        // Note: photoUrls would need to be fetched separately from Firestore if needed
+        // For now, we'll leave it null since ExhibitMatchResult doesn't contain photo data
+        photoUrls = null;
 
         _audioPlayer.stop();
         _isPlaying = false;
@@ -391,84 +177,31 @@ class _ExhibitPageState extends State<ExhibitPage> {
         _playerState = AudioPlayerState.stopped;
       });
 
-      if (description.isNotEmpty) {
+      if (result.description.isNotEmpty) {
         await _tts.stop();
-        await _tts.speak(description);
+        await _tts.speak(result.description);
       }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('✅ $exhibitName found! Tap play to hear the description.'),
+          content: Text('✅ ${result.name} found!'),
           duration: const Duration(seconds: 3),
+          backgroundColor: Colors.green,
         ),
       );
     } catch (e) {
       if (!mounted) return;
+      print('❌ Detection error: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Detection failed: ${e.toString()}')),
+        SnackBar(
+          content: Text('Detection failed: ${e.toString()}'),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
       );
     } finally {
         if (mounted) setState(() => _isDetecting = false);
-    }
-  }
-
-  // --- ADVANCED COLLISION PREVENTION ---
-  Map<String, dynamic>? _getBestMatchWithValidation(
-    Map<String, int> liveRssiMap,
-    List<Map<String, dynamic>> matchResults,
-  ) {
-    if (matchResults.isEmpty) return null;
-
-    // Sort by distance (ascending - closest first)
-    matchResults.sort((a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
-
-    const double primaryThreshold = 800.0; // Primary match threshold
-    const double secondaryThreshold = 1500.0; // Secondary match threshold
-    const double rejectionThreshold = 3000.0; // Reject if worse than this
-
-    final bestMatch = matchResults.first;
-    final secondBest = matchResults.length > 1 ? matchResults[1] : null;
-
-    double bestDistance = bestMatch['distance'] as double;
-    double? secondDistance = secondBest?['distance'] as double?;
-
-    // 1. REJECT if distance is too high (no good matches)
-    if (bestDistance > rejectionThreshold) {
-      print('🔴 REJECTED: Distance too high (${bestDistance.toStringAsFixed(1)} > $rejectionThreshold)');
-      return null;
-    }
-
-    // 2. VALIDATE signal quality - check how many networks were matched
-    final bestStoredMap = (bestMatch['storedMap'] as Map<String, int>?) ?? {};
-    final matchedNetworks = liveRssiMap.keys.where((bssid) => bestStoredMap.containsKey(bssid)).length;
-
-    if (matchedNetworks < 2) {
-      print('🟡 WARNING: Only $matchedNetworks networks matched (minimum 2 required)');
-    }
-
-    // 3. CHECK discrimination ratio - best should be significantly better than second
-    if (secondDistance != null && secondDistance > 0) {
-      double discriminationRatio = secondDistance / bestDistance;
-
-      if (discriminationRatio < 1.5) {
-        print('🟡 WARNING: Poor discrimination ratio (${discriminationRatio.toStringAsFixed(2)} < 1.5)');
-        // Still allow but with warning
-      } else {
-        print('✅ GOOD: Strong discrimination (${discriminationRatio.toStringAsFixed(2)})');
-      }
-    }
-
-    // 4. FINAL VALIDATION
-    if (bestDistance <= primaryThreshold) {
-      print('✅ PRIMARY MATCH: Distance ${bestDistance.toStringAsFixed(1)} <= $primaryThreshold');
-      return bestMatch;
-    } else if (bestDistance <= secondaryThreshold && matchedNetworks >= 2) {
-      print('🟡 SECONDARY MATCH: Distance ${bestDistance.toStringAsFixed(1)} <= $secondaryThreshold with $matchedNetworks matches');
-      return bestMatch;
-    } else {
-      print('🔴 REJECTED: Distance ${bestDistance.toStringAsFixed(1)} > $secondaryThreshold or insufficient matches');
-      return null;
     }
   }
 
@@ -482,12 +215,13 @@ class _ExhibitPageState extends State<ExhibitPage> {
       seconds,
     ].join(':');
   }
+
   Widget _buildAudioPlayerCard() {
     return Container(
       margin: const EdgeInsets.only(top: 20),
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
       decoration: BoxDecoration(
-        color: Colors.grey[900], // Dark background for contrast
+        color: Colors.grey[900],
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
@@ -527,7 +261,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
                   icon: Icon(
                     _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
                     size: 48,
-                    color: Colors.amber, // Highlight the control button
+                    color: Colors.amber,
                   ),
                   onPressed: _playPauseAudio,
                 ),
@@ -543,7 +277,6 @@ class _ExhibitPageState extends State<ExhibitPage> {
     );
   }
 
-  // Helper widget for the main content card
   Widget _buildContentCard() {
     return Expanded(
       child: Container(
@@ -600,14 +333,88 @@ class _ExhibitPageState extends State<ExhibitPage> {
     );
   }
 
-  // Widget for the scanning status indicator
+  Widget _buildImageGallery() {
+    if (photoUrls == null || photoUrls!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Exhibit Images',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 200,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: photoUrls!.length,
+              itemBuilder: (context, index) {
+                return Container(
+                  width: 300,
+                  margin: const EdgeInsets.only(right: 12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey[600]!, width: 2),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.network(
+                      photoUrls![index],
+                      fit: BoxFit.cover,
+                      loadingBuilder: (context, child, loadingProgress) {
+                        if (loadingProgress == null) return child;
+                        return Container(
+                          color: Colors.grey[800],
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.amber,
+                              value: loadingProgress.expectedTotalBytes != null
+                                  ? loadingProgress.cumulativeBytesLoaded /
+                                      loadingProgress.expectedTotalBytes!
+                                  : null,
+                            ),
+                          ),
+                        );
+                      },
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          color: Colors.grey[800],
+                          child: const Center(
+                            child: Icon(
+                              Icons.broken_image,
+                              color: Colors.grey,
+                              size: 48,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildScanStatus() {
-    final statusText = _isDetecting ? 'Scanning for Fingerprint...' : 'Detection Ready';
+    final statusText = _isDetecting ? 'Enhanced WiFi + Motion Analysis...' : 'Ready';
     final statusIcon = _isDetecting ? Icons.wifi_find : Icons.location_on;
     final statusColor = _isDetecting ? Colors.amber[700]! : Colors.green;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: statusColor.withOpacity(0.1),
         borderRadius: BorderRadius.circular(20),
@@ -626,6 +433,15 @@ class _ExhibitPageState extends State<ExhibitPage> {
               fontWeight: FontWeight.w600,
             ),
           ),
+          if (!_isDetecting && exhibitName != null && exhibitName != 'Exhibit')
+            Text(
+              ' (Enhanced)',
+              style: TextStyle(
+                fontSize: 10,
+                color: Colors.blue[400],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
         ],
       ),
     );
@@ -680,10 +496,10 @@ class _ExhibitPageState extends State<ExhibitPage> {
               ],
             ),
             
-            // Subtitle showing exhibit status
+            // Status subtitle
             if (_isDetecting)
               Text(
-                'Detecting your location...',
+                'Analyzing WiFi signals and motion sensors for enhanced accuracy...',
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
@@ -692,7 +508,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
               )
             else if (exhibitName != null && exhibitName != 'Exhibit')
               Text(
-                'Exhibit detected successfully',
+                'Exhibit detected using WiFi fingerprint + sensor validation',
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
@@ -701,7 +517,7 @@ class _ExhibitPageState extends State<ExhibitPage> {
               )
             else
               Text(
-                'Tap below to detect nearby exhibits',
+                'Advanced WiFi + sensor-based exhibit detection with enhanced accuracy',
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
@@ -712,24 +528,27 @@ class _ExhibitPageState extends State<ExhibitPage> {
             // Optional streaming audio player
             if (audioUrl != null) _buildAudioPlayerCard(),
 
+            // Image gallery (if available)
+            _buildImageGallery(),
+
             // Exhibit Description Content
             _buildContentCard(),
 
-            // Get Exhibit Button
+            // Detection Button
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
                 onPressed: _isDetecting ? null : _getNewExhibitDescription,
-                icon: _isDetecting 
+                icon: _isDetecting
                     ? const SizedBox(
-                        width: 18, 
-                        height: 18, 
+                        width: 18,
+                        height: 18,
                         child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2)
                       )
                     : const Icon(Icons.wifi_find, color: Colors.black),
                 label: Text(_isDetecting ? 'DETECTING...' : 'DETECT EXHIBIT'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.amber, 
+                  backgroundColor: Colors.amber,
                   foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 16.0),
                   shape: RoundedRectangleBorder(
