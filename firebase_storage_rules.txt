@@ -1,0 +1,31 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Allow read access to all files (for exhibit images)
+    match /{allPaths=**} {
+      allow read: if true;
+    }
+
+    // Allow authenticated uploads to exhibits folder
+    match /exhibits/{exhibitId}/{allPaths=**} {
+      allow create: if request.auth != null;
+      allow write: if request.auth != null;
+      allow delete: if request.auth != null;
+      allow read: if true; // Public read for exhibit images
+    }
+
+    // Allow basic validation checks (for app startup)
+    match /test-access-{timestamp} {
+      allow create, write: if request.auth != null;
+      allow delete: if request.auth != null;
+    }
+
+    // Default deny for security
+    match /{allPaths=**} {
+      allow read: if false;
+      allow write: if false;
+      allow create: if false;
+      allow delete: if false;
+    }
+  }
+}

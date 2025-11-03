@@ -12,7 +12,7 @@ android {
     namespace = "com.example.artlistener_1"
     compileSdk = 36
     ndkVersion = "27.0.12077973"
-    buildToolsVersion = "34.0.0"
+    buildToolsVersion = "36.0.0"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -39,6 +39,12 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            version = "3.22.1"
         }
     }
 }
