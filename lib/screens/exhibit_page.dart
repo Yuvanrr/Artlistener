@@ -31,8 +31,8 @@ class _ExhibitPageState extends State<ExhibitPage> {
   final FlutterTts _tts = FlutterTts();
   bool _isSpeaking = false;
 
-  // Enhanced location service with sensor fusion
-  late LocationService _locationService;
+  // Target SSID
+  static const String targetSsid = 'PSG';
 
   @override
   void initState() {
@@ -139,28 +139,83 @@ class _ExhibitPageState extends State<ExhibitPage> {
     }
   }
 
-  // --- MANUAL DETECTION ---
+  // Button action: detect PSG Wi‑Fi, compare RSSI against DB, speak description
   Future<void> _getNewExhibitDescription() async {
-    if (_isDetecting) return;
-    setState(() => _isDetecting = true);
-
     try {
-      // Use the LocationService for detection (WiFi + Sensor Fusion)
-      final result = await _locationService.findClosestExhibit();
-
-      if (result == null) {
+      // 1) Scan Wi‑Fi and pick the strongest AP for the target SSID
+      final can = await wifi_scan.WiFiScan.instance.canStartScan();
+      if (can != wifi_scan.CanStartScan.yes) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No exhibit detected. Please stand still and ensure stable WiFi connection.'),
-            duration: Duration(seconds: 4),
-            backgroundColor: Colors.orange,
-          ),
+          const SnackBar(content: Text('Location permission/services required for Wi‑Fi scan')),
         );
         return;
       }
 
-      // 3. Update UI and trigger audio
+      // Start scan and get fresh results
+      await wifi_scan.WiFiScan.instance.getScannedResults(); // get existing if available
+      final results = await wifi_scan.WiFiScan.instance.getScannedResults();
+      final psgAps = results.where((ap) => ap.ssid == targetSsid).toList();
+
+      if (psgAps.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PSG network not found nearby')),
+        );
+        return;
+      }
+
+      // Choose the AP with the best signal (highest RSSI)
+      psgAps.sort((a, b) => b.level.compareTo(a.level));
+      final liveAp = psgAps.first;
+      final liveRssi = liveAp.level;
+
+      // 2) Query Firestore for documents with wifi.ssid == 'PSG'
+      final qs = await FirebaseFirestore.instance
+          .collection('c_guru')
+          .where('wifi.ssid', isEqualTo: targetSsid)
+          .get();
+
+      if (qs.docs.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No exhibits for PSG in database')),
+        );
+        return;
+      }
+
+      // 3) Pick the best match by closest RSSI difference
+      QueryDocumentSnapshot<Map<String, dynamic>>? bestDoc;
+      int bestDiff = 1 << 30;
+
+      for (final doc in qs.docs) {
+        final data = doc.data();
+        final wifi = data['wifi'] as Map<String, dynamic>?;
+
+        final storedRssi = (wifi?['rssi'] is num) ? (wifi?['rssi'] as num).toInt() : null;
+        if (storedRssi == null) continue;
+
+        final diff = (storedRssi - liveRssi).abs();
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestDoc = doc;
+        }
+      }
+
+      if (bestDoc == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No matching exhibit by signal strength')),
+        );
+        return;
+      }
+
+      final bestData = bestDoc!.data();
+      final name = (bestData['name'] ?? '').toString();
+      final description = (bestData['description'] ?? '').toString();
+      final maybeAudio = (bestData['audioUrl'] as String?);
+
+      // 4) Update UI and speak description
       if (!mounted) return;
       setState(() {
         exhibitName = result.name.isEmpty ? 'Exhibit' : result.name;
@@ -177,19 +232,17 @@ class _ExhibitPageState extends State<ExhibitPage> {
         _playerState = AudioPlayerState.stopped;
       });
 
-      if (result.description.isNotEmpty) {
+      // Read aloud via TTS
+      if (description.isNotEmpty) {
         await _tts.stop();
-        await _tts.speak(result.description);
+        await _tts.speak(description);
       }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✅ ${result.name} found!'),
-          duration: const Duration(seconds: 3),
-          backgroundColor: Colors.green,
-        ),
+        const SnackBar(content: Text('Loaded exhibit from Wi‑Fi fingerprint')),
       );
+
     } catch (e) {
       if (!mounted) return;
       print('❌ Detection error: $e');
@@ -200,8 +253,6 @@ class _ExhibitPageState extends State<ExhibitPage> {
           backgroundColor: Colors.red,
         ),
       );
-    } finally {
-        if (mounted) setState(() => _isDetecting = false);
     }
   }
 
@@ -466,29 +517,81 @@ class _ExhibitPageState extends State<ExhibitPage> {
         ),
         centerTitle: true,
         backgroundColor: Colors.black,
-        elevation: 4,
-        actions: [
-          // Removed Wi-Fi debug and confidence features for cleaner UI
-        ],
+        elevation: 0,
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Row 1: Title and Status
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.baseline,
-              textBaseline: TextBaseline.alphabetic,
-              children: [
-                Expanded(
+            // Exhibit Name
+            Text(
+              exhibitName ?? 'Exhibit not found',
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.black,
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Optional streaming audio (if audioUrl provided in DB)
+            if (audioUrl != null) ...[
+              Container(
+                padding: const EdgeInsets.all(12.0),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8.0),
+                ),
+                child: Column(
+                  children: [
+                    Slider(
+                      value: _position.inSeconds.clamp(0, _duration.inSeconds).toDouble(),
+                      max: _duration.inSeconds == 0 ? 1 : _duration.inSeconds.toDouble(),
+                      onChanged: (value) async {
+                        await _audioPlayer.seek(Duration(seconds: value.toInt()));
+                      },
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(_formatDuration(_position)),
+                          IconButton(
+                            icon: Icon(
+                              _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                              size: 40,
+                              color: Colors.black,
+                            ),
+                            onPressed: _playPauseAudio,
+                          ),
+                          Text(_formatDuration(_duration - _position)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+            ],
+
+            // Exhibit Description
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16.0),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(8.0),
+                ),
+                child: SingleChildScrollView(
                   child: Text(
-                    exhibitName ?? 'Exhibit',
+                    exhibitDescription ??
+                        'Exhibit description has not been retrieved or is unable to retrieve due to server issues.',
                     style: const TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w900,
-                      color: Colors.white,
+                      fontSize: 16,
+                      color: Colors.black87,
                     ),
                   ),
                 ),
@@ -537,16 +640,8 @@ class _ExhibitPageState extends State<ExhibitPage> {
             // Detection Button
             SizedBox(
               width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _isDetecting ? null : _getNewExhibitDescription,
-                icon: _isDetecting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2)
-                      )
-                    : const Icon(Icons.wifi_find, color: Colors.black),
-                label: Text(_isDetecting ? 'DETECTING...' : 'DETECT EXHIBIT'),
+              child: ElevatedButton(
+                onPressed: _getNewExhibitDescription,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.amber,
                   foregroundColor: Colors.black,
@@ -554,7 +649,11 @@ class _ExhibitPageState extends State<ExhibitPage> {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10.0),
                   ),
-                  textStyle: const TextStyle(
+                ),
+                child: const Text(
+                  'Get Exhibit (via Wi‑Fi)',
+                  style: TextStyle(
+                    color: Colors.white,
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
                   ),
